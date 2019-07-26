@@ -4,7 +4,7 @@
 
 ### 1.常用快捷键
 
-![1563848901037](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1563848901037.png)
+![1563848901037](pic\1563848901037.png)
 
 ### 2.修改快捷键
 

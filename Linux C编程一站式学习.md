@@ -12,7 +12,7 @@ CPU总是周而复始的做同一件事：不停的从内存取指令，然后�
 
 **访问内存读取的过程**:
 
-![1560561293973](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560561293973.png)
+![1560561293973](pic\1560561293973.png)
 
 1. CPU内部将寄存器对接到数据总线上，使寄存器的每一位对接到一条数据线，等待接收数据。
 2. CPU通过控制线发一个读请求，并且将内存地址通过地址线发给内存。
@@ -20,7 +20,7 @@ CPU总是周而复始的做同一件事：不停的从内存取指令，然后�
 
 **cpu的取指执行过程**：
 
-![1560561757693](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560561757693.png)
+![1560561757693](pic\1560561757693.png)
 
 1. eip寄存器指向地址0x80483a2，CPU从这里开始取一条5个字节的指令，然后 eip 寄存器指向下一条指令的起始地址0x80483a7。`
 2. CPU对这5个字节译码，得知这条指令要求从地址0x804a01c开始取4个字节保存到 eax 寄存器。
@@ -46,11 +46,11 @@ MMU是内存管理单元
 
 **物理地址**：
 
-![1560562759338](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560562759338.png)
+![1560562759338](pic\1560562759338.png)
 
 如果处理器没有MMU，或者有MMU但没有启用，CPU执行单元发出的内存地址将直接传到芯片引脚上，被内存芯片（以下称为物理内存，以便与虚拟内存区分）接收，这称为物理地址（Physical Address，以下简称PA）
 
-![1560562801404](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560562801404.png)
+![1560562801404](pic\1560562801404.png)
 
 如果处理器启用了MMU，CPU执行单元发出的内存地址将被MMU截获，从CPU到MMU的地址称为虚拟地址（Virtual Address，以下简称VA），而MMU将这个地址翻译成另一个地址发到CPU芯片的外部地址引脚上，也就是将VA映射成PA
 
@@ -68,7 +68,7 @@ MMU是内存管理单元
 
 文件和加载地址的对应关系：
 
-![1560589549282](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560589549282.png)
+![1560589549282](pic\1560589549282.png)
 
 
 
@@ -78,7 +78,7 @@ MMU是内存管理单元
 
 函数栈帧：
 
-![1560589918494](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560589918494.png)
+![1560589918494](pic\1560589918494.png)
 
 esp始终指向栈顶，ebp是在堆栈中寻址用的。
 
@@ -92,11 +92,11 @@ esp始终指向栈顶，ebp是在堆栈中寻址用的。
 
 ### 2.main函数和启动历程
 
-编译一个程序三步：![1560592116312](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560592116312.png)
+编译一个程序三步：![1560592116312](pic\1560592116312.png)
 
 1.生成汇编代码	2.生成目标文件	3.生成可执行文件
 
-![1560592187546](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560592187546.png)
+![1560592187546](pic\1560592187546.png)
 
 gcc main.o -o main 其实是调用 ld 做链接的，相当于这样的命令：
 
@@ -240,9 +240,9 @@ volatile修饰变量，告诉编译器，即使在编译时制定了优化选项
 
 ### 3.静态库
 
-![1560939241102](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560939241102.png)
+![1560939241102](pic\1560939241102.png)
 
-![1560939250914](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560939250914.png)
+![1560939250914](pic\1560939250914.png)
 
 ar:打包的作用
 
@@ -250,7 +250,7 @@ r：将后面的文件列表添加到文件包，如果文件包不存在就创�
 
 s:用于生成静态库的
 
-![1560939487400](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560939487400.png)
+![1560939487400](pic\1560939487400.png)
 
 -L:告诉编译器去哪里找需要的库文件。-L表示在当前目录找
 
@@ -270,7 +270,7 @@ s:用于生成静态库的
 
 一般一个共享库的有三个名字：soname,real-name, linker-name。
 
-![1560940179906](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560940179906.png)
+![1560940179906](pic\1560940179906.png)
 
 -f:后面接一些编译选项，PIC表示生成位置无关代码
 
@@ -306,7 +306,7 @@ gcc -shared -Wl,-soname, libmyab.so.1 -o libmyab.so.1.0.1 a.o b.o -lc
 
 /proc 目录中的文件并不是真正的磁盘文件，而是由内核虚拟出来的文件系统，当前系统中运行的每个进程在 /proc 下都有一个子目录，目录名就是进程的id，查看目录下的文件可以得到该进程的相关信息
 
-![1561017215399](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1561017215399.png)
+![1561017215399](pic\1561017215399.png)
 
 **虚拟内存管理的作用：**
 
@@ -315,7 +315,7 @@ gcc -shared -Wl,-soname, libmyab.so.1 -o libmyab.so.1.0.1 a.o b.o -lc
 
 进程的地址空间是独立的：
 
-![1561017558901](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1561017558901.png)
+![1561017558901](pic\1561017558901.png)
 
 由于每个进程都有自己的一套VA到PA的映射表，整个地址空间中的任何VA都在每个进程自己的映射表中查找相应的PA，因此不可能访问到其它进程的地址，也就没有可能意外改写其它进程的数据。
 
@@ -323,13 +323,13 @@ gcc -shared -Wl,-soname, libmyab.so.1 -o libmyab.so.1.0.1 a.o b.o -lc
 
 **不连续的PA可以映射为连续的VA**
 
-![1561017974675](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1561017974675.png)
+![1561017974675](pic\1561017974675.png)
 
 ​	4.一个系统如果同时运行着很多进程，为各进程分配的内存之和可能会大于实际可用的物理内存，虚拟内存管理使得这种情况下各进程仍然能够正常运行
 
 **系统中可分配的内存总量 = 物理内存的大小 + 交换设备的大小**
 
-![1561018276081](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1561018276081.png)
+![1561018276081](pic\1561018276081.png)
 
 第一张图是换出，将物理页面中的数据保存到磁盘，并解除地址映射，释放物理页面。第二张图是换入，从空闲的物理页面中分配一个，将磁盘暂存的页面加载回内存，并建立地址映射。
 

@@ -80,7 +80,7 @@ void foo_bar()
 * **默认逐成员初始化(Default Memberwise Initialization)**：
 * **逐成员初始化(Memberwise Initialization)**：
 * **位逐次拷贝(Bitwise Copy Semantics)**
-    
+  
     ```c++
     //以下声明展现了bitwide copy semantics
     class Word{
@@ -116,7 +116,6 @@ void foo_bar()
 第4种情况不展现“位逐次拷贝”是因为虚基类子对象部分能够正确的初始化。1）如果使用虚基类子类的一个对象，初始化虚基类子类的另一个对象，那么“位逐次拷贝”绰绰有余；2）但是如企图以一个虚基类子类的子类的对象，初始化一个虚基类子类的对象，编译器就必须判断“后续当程序员企图存取其虚基类子对象时能否正确执行”，因此必须合成一个拷贝构造函数，安插一些代码以设定虚基类指针和偏移量的初值（或只是简单地确定它没有被抹消）
 
 <div align="center"> <img src="../pic/cppmode-2-2.png"/> </div>
-
 在下面的情况下，编译器无法知道“位逐次拷贝”是否还保持着，因为它无法知道Raccoon指针是否指向一个真正的Raccoon对象或是指向一个Raccoon的子类对象：
 
 ```c++
@@ -183,7 +182,6 @@ int main(){
 类X、Y、Z、A具有如下关系：
 
 <div align="center"> <img src="../pic/cppmode-3-1.png"/> </div>
-
 使用sizeof打印大小有如下结果：
 
 ```c++
@@ -216,7 +214,6 @@ int main(){
 	* **对齐的要求**
 
 <div align="center"> <img src="../pic/cppmode-3-2.png"/> </div>
-
 
 
 > C++标准并不强制规定如“基类子对象的排列顺序”或“不同存取层级的数据成员的排列顺序”这种琐碎细节。它也不规定“虚函数”或“虚基类”的实现细节。C++标准只说：这些细节由各家厂商自定
@@ -311,13 +308,11 @@ pt->x = 0.0;
 #### 1）不使用继承
 
 <div align="center"> <img src="../pic/cppmode-3-3.png"/> </div>
-
 #### 2）不含多态的继承
 
 C++标准并未强制指定派生类和基类成员的排列顺序；理论上编译器可以自由安排。在大部分编译器上，基类成员总是先出现（属于虚基类的除外）
 
 <div align="center"> <img src="../pic/cppmode-3-4.png"/> </div>
-
 将两个原本独立不相干的类凑成一对“类型/子类型”，并带有继承关系，需要注意两点
 
 1. 可能会重复设计一些相同操作的函数
@@ -367,11 +362,9 @@ private:
 ```
 
 <div align="center"> <img src="../pic/cppmode-3-5.png"/> </div>
-
 在使用继承时，派生类中的基类子对象具有完整原样性，派生类部分的成员不直接使用基类子对象的填充部分是因为：如果将一个父类对象拷贝给一个派生类对象，派生类对象的派生类成员会被覆盖：
 
 <div align="center"> <img src="../pic/cppmode-3-6.png"/> </div>
-
 #### 3）含多态的继承
 
 相比于不含多态的继承，这种情况下，每一个class object内含一个额外的vptr member；多了一个virtual table；此外每一个virtual member function的调用也比以前复杂了
@@ -380,14 +373,11 @@ private:
 
 * 把vptr放在class object的尾端，可以保留base class C struct的对象布局，因而允许在C程序代码中也能使用。这种做法在C++最初问世时，被许多人采用
 <div align="center"> <img src="../pic/cppmode-3-11.png"/> </div>
-
 * 把vptr放在class object的首端，对于“在多重继承之下，通过指向class members的指针调用virtual function”，会带来一些帮助。否则，不仅“从class object起始点开始量起”的offset必须在执行期备妥，甚至与class vptr之间的offset也必须备妥。当然，vptr放在前端，代价就是丧失了C语言兼容性（但是似乎并没有多少程序会从一个C struct派生出一个具有多态性质的class）
 <div align="center"> <img src="../pic/cppmode-3-12.png"/> </div>
-
 假设把vptr放在**base class**的尾端，则Point2d和Point3d的成员布局如下：
 
 <div align="center"> <img src="../pic/cppmode-3-7.png"/> </div>
-
 #### 4）多重继承
 
 * 将vptr放在class object的尾端，提供了一种“自然多态”形式，基类和派生类的object都是从相同的地址开始，因此把一个派生类对象的地址指定给基类的指针或引用时，不需要编译器去调停或修改地址。它很自然地可以发生，提供了最佳执行效率
@@ -432,7 +422,6 @@ protected:
 假设将vptr放在class object的尾端，类的继承关系和members的布局如下：
 
 <div align="center"> <img src="../pic/cppmode-3-8.png"/> </div>
-
 C++标准并未要求Vertex3d中的基类Point3d和Vertex有特定的排列顺序。原始的cfront编译器是根据声明顺序来排列的。因此cfront编译器创作出来的Vertex3d对象，将被视为一个Point3d子对象（其中又有一个Point2d子对象）加上一个Vertex子对象，最后再加上Vertex3d自己的部分。目前各编译器仍然以此方式完成多重基类的布局（但如果加上虚拟继承，就不一样了）
 
 在这个例子中：
@@ -481,7 +470,6 @@ pv = pv3d ? (Vertex*)(((char*)pv3d) + sizeof(Point3d)) : 0;
 **一般的布局策略是先安排好派生类的不变部分，然后再建立其共享部分**（对于共享部分的存取，cfront编译器会在每一个派生类对象中安插一些指针，每个指针指向一个虚基类。要存取继承得来的虚基类成员。可以通过相关指针间接完成）
 
 <div align="center"> <img src="../pic/cppmode-3-9.png"/> </div>
-
 这样的实现模型有两个主要的缺点：
 
 1. 每一个对象必须针对其每一个virtual base class背负一个额外的指针（然而理想上我们希望class object有固定的负担，不因为其virtual base class的个数而有所变化）
@@ -491,7 +479,6 @@ pv = pv3d ? (Vertex*)(((char*)pv3d) + sizeof(Point3d)) : 0;
 	* MetaWare和其它编译器仍然使用cfront的原始实现模型来解决这个问题，他们经由拷贝操作取得所有的nested virtual base class指针，放到派生类object之中。从而解决了“固定存取时间”的问题，虽然付出了一些空间上的代价
 	
 <div align="center"> <img src="../pic/cppmode-3-10.png"/> </div>
-
 > 一般而言，virtual base class最有效的一种运用形式就是：一个抽象的virtual base class，没有任何data members
 
 ## 3.5 指向Data Members的指针
@@ -764,7 +751,6 @@ protected:
 3个类的虚函数表如下：
 
 <div align="center"> <img src="../pic/cppmode-4-1.png"/> </div>
-
 对于如下调用：
 
 ```c++
@@ -839,7 +825,6 @@ vtbl__Base2__Derived;   //次要表格
 * 将一个Derived对象地址指定给一个Base2指针时，被处理的virtual table是次要表格vtbl__Base2__Derived
 
 <div align="center"> <img src="../pic/cppmode-4-2.png"/> </div>
-
 **有3种情况，第二或后继的base class会影响对virtual functions的支持**：
 
 1. **通过一个“指向第二个base class”的指针，调用derived class virtual function**
@@ -901,7 +886,6 @@ protected:
 virtual table布局如下：
 
 <div align="center"> <img src="../pic/cppmode-4-3.png"/> </div>
-
 虽然Point3d有唯一一个base class，即Point2d，但Point3d和Point2d的起始部分并不像“非虚拟的单一继承”情况那样一致。如上图所示，由于Point2d和Point3d的对象不再相符，两者之间的转换也就需要调整this指针。至于在虚拟继承的情况下要消除thunks，一般而言已经被证明是一项高难度技术
 
 ## 4.3 指向Member Function的指针
@@ -1085,7 +1069,6 @@ Point foobar()
 上面的global在C和C++中的区别：
 
 <div align="center"> <img src="../pic/cppmode-5-1.png"/> </div>
-
 #### 2）抽象数据类型
 
 ```c++
@@ -1255,7 +1238,6 @@ protected:
 假设具有如下继承体系：
 
 <div align="center"> <img src="../pic/cppmode-5-2.png"/> </div>
-
 ```c++
 class Point{
 public:
@@ -1488,7 +1470,6 @@ __sti__matrix_c__identity()
 3. 提供一组runtime library "munch"函数；一个_main()函数（用以调用可执行文件中的所有__sti()函数）,以及一个exit()函数（以类似方式调用所有的__std()函数）
 
 <div align="center"> <img src="../pic/cppmode-6-1.png"/> </div>
-
 cfront2.0版之前并不支持noclass object的静态初始化操作；也就是说C语言的限制仍然残留着。所以下面的每一个初始化操作都被标为不合法：
 
 ```c++
@@ -1809,7 +1790,6 @@ const String &space = " ";
 环境信息：
 
 <div align="center"> <img src="../pic/cppmode-f-0.png"/> </div>
-
 代码如下：
 
 ```c++
@@ -1851,18 +1831,14 @@ int main()
 
 * 可以使用`p 对象`直接打印对象：
 <div align="center"> <img src="../pic/cppmode-f-2.png"/> </div>
-
 * 可以通过打印对象地址查看虚函数表：
 <div align="center"> <img src="../pic/cppmode-f-1.png"/> </div>
-
 查看**虚函数表**：
 
 * 通过虚函数表的地址打印出每个虚函数的地址
 <div align="center"> <img src="../pic/cppmode-f-3.png"/> </div>
-
 * 使用`info line 行号`打印出虚函数的地址，使用`x`命令核对虚函数表中虚函数指针的布局：
 <div align="center"> <img src="../pic/cppmode-f-4.png"/> </div>
-
 画图表示如下（typeinfo在虚函数表上方）：
 
 <div align="center"> <img src="../pic/cppmode-f-5.png"/> </div>
