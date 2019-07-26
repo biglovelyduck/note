@@ -43,6 +43,8 @@ cout.precision(12);	//将打印精度设置为12位数字，等于setprecision(1
 
 ![1560390024341](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560390024341.png)
 
+
+
 ### 2.未格式化IO
 
 ![1560395191542](C:\Users\Administrator\AppData\Roaming\Typora\typora-user-images\1560395191542.png)
