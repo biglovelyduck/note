@@ -1,0 +1,19 @@
+﻿生成启动时间为 2018/6/29 星期五 12:10:57。
+     1>项目“H:\C++code\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c.vcxproj”在节点 2 上(Rebuild 个目标)。
+     1>C:\Program Files (x86)\MSBuild\Microsoft.Cpp\v4.0\V120\Microsoft.CppBuild.targets(388,5): warning MSB8028: The intermediate directory (Debug\) contains files shared from another project (线性表的顺序存储设计与实现.c.vcxproj).  This can lead to incorrect clean and rebuild behavior.
+     1>ClCompile:
+         D:\VisualStudio\VC\bin\CL.exe /c /ZI /nologo /W3 /WX- /sdl /Od /Oy- /D WIN32 /D _DEBUG /D _CONSOLE /D _LIB /D _UNICODE /D UNICODE /Gm /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Fo"Debug\\" /Fd"Debug\vc120.pdb" /Gd /TC /analyze- /errorReport:prompt seqlist.c "线性表的顺序存储设计与实现.c"
+         线性表的顺序存储设计与实现.c
+         seqlist.c
+     1>h:\c++code\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c\seqlist.c(97): warning C4047: “=”:“unsigned int”与“unsigned int *”的间接级别不同
+     1>h:\c++code\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c\seqlist.c(120): warning C4047: “=”:“SeqListNode *”与“int”的间接级别不同
+         正在生成代码...
+       Link:
+         D:\VisualStudio\VC\bin\link.exe /ERRORREPORT:PROMPT /OUT:"H:\C++code\线性表的顺序存储设计与实现.c\Debug\线性表的顺序存储设计与实现.exe" /INCREMENTAL /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"H:\C++code\线性表的顺序存储设计与实现.c\Debug\线性表的顺序存储设计与实现.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"H:\C++code\线性表的顺序存储设计与实现.c\Debug\线性表的顺序存储设计与实现.lib" /MACHINE:X86 Debug\seqlist.obj
+         "Debug\线性表的顺序存储设计与实现.obj"
+         线性表的顺序存储设计与实现.c.vcxproj -> H:\C++code\线性表的顺序存储设计与实现.c\Debug\线性表的顺序存储设计与实现.exe
+     1>已完成生成项目“H:\C++code\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c\线性表的顺序存储设计与实现.c.vcxproj”(Rebuild 个目标)的操作。
+
+生成成功。
+
+已用时间 00:00:01.24

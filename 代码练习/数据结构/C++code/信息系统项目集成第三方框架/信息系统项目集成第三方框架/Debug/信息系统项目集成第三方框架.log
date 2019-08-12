@@ -1,0 +1,19 @@
+﻿生成启动时间为 2018/6/28 星期四 19:45:27。
+     1>项目“H:\C++code\信息系统项目集成第三方框架\信息系统项目集成第三方框架\信息系统项目集成第三方框架.vcxproj”在节点 2 上(Build 个目标)。
+     1>ClCompile:
+         D:\VisualStudio\VC\bin\CL.exe /c /ZI /nologo /W3 /WX- /sdl /Od /Oy- /D WIN32 /D _DEBUG /D _CONSOLE /D _LIB /D _UNICODE /D UNICODE /Gm /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Fo"Debug\\" /Fd"Debug\vc120.pdb" /Gd /TP /analyze- /errorReport:prompt "D:\资料视频\c++学习路线图\第二阶段 - C++入门\01_C++基础\c++基础day07\代码\信息系统框架集成第三方产品案例\mainclass01_完成socket抽象类的集成测试.cpp"
+         mainclass01_完成socket抽象类的集成测试.cpp
+       Link:
+         D:\VisualStudio\VC\bin\link.exe /ERRORREPORT:PROMPT /OUT:"H:\C++code\信息系统项目集成第三方框架\Debug\信息系统项目集成第三方框架.exe" /INCREMENTAL /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"H:\C++code\信息系统项目集成第三方框架\Debug\信息系统项目集成第三方框架.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"H:\C++code\信息系统项目集成第三方框架\Debug\信息系统项目集成第三方框架.lib" /MACHINE:X86 Debug\CSckFactoryImp1.obj
+         Debug\CSckFactoryImp2.obj
+         Debug\des.obj
+         Debug\HwEncDec.obj
+         "Debug\mainclass01_完成socket抽象类的集成测试.obj"
+         "Debug\mainclass02_完成框架集成socket厂商和加密厂商的产品.obj"
+         "Debug\mainclass03_框架类.obj"
+         信息系统项目集成第三方框架.vcxproj -> H:\C++code\信息系统项目集成第三方框架\Debug\信息系统项目集成第三方框架.exe
+     1>已完成生成项目“H:\C++code\信息系统项目集成第三方框架\信息系统项目集成第三方框架\信息系统项目集成第三方框架.vcxproj”(Build 个目标)的操作。
+
+生成成功。
+
+已用时间 00:00:01.42

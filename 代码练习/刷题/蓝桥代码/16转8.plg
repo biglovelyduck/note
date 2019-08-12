@@ -1,0 +1,45 @@
+<html>
+<body>
+<pre>
+<h1>Build Log</h1>
+<h3>
+--------------------Configuration: 16转8 - Win32 Debug--------------------
+</h3>
+<h3>Command Lines</h3>
+Creating temporary file "C:\Users\ADMINI~1\AppData\Local\Temp\RSPE02F.tmp" with contents
+[
+/nologo /MLd /W3 /Gm /GX /ZI /Od /D "WIN32" /D "_DEBUG" /D "_CONSOLE" /D "_MBCS" /Fp"Debug/16转8.pch" /YX /Fo"Debug/" /Fd"Debug/" /FD /GZ /c 
+"H:\蓝桥代码\16转8.c"
+]
+Creating command line "cl.exe @C:\Users\ADMINI~1\AppData\Local\Temp\RSPE02F.tmp" 
+<h3>Output Window</h3>
+Compiling...
+16转8.c
+H:\蓝桥代码\16转8.c(71) : error C2059: syntax error : '}'
+H:\蓝桥代码\16转8.c(87) : error C2065: 'z' : undeclared identifier
+H:\蓝桥代码\16转8.c(87) : warning C4047: 'function' : 'char *' differs in levels of indirection from 'int '
+H:\蓝桥代码\16转8.c(87) : warning C4024: 'strcat' : different types for formal and actual parameter 1
+H:\蓝桥代码\16转8.c(89) : warning C4047: 'function' : 'char *' differs in levels of indirection from 'int '
+H:\蓝桥代码\16转8.c(89) : warning C4024: 'strcat' : different types for formal and actual parameter 1
+H:\蓝桥代码\16转8.c(91) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(91) : error C2106: '=' : left operand must be l-value
+H:\蓝桥代码\16转8.c(92) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(92) : error C2106: '=' : left operand must be l-value
+H:\蓝桥代码\16转8.c(93) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(93) : error C2106: '=' : left operand must be l-value
+H:\蓝桥代码\16转8.c(94) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(94) : error C2106: '=' : left operand must be l-value
+H:\蓝桥代码\16转8.c(98) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(98) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(98) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(99) : error C2109: subscript requires array or pointer type
+H:\蓝桥代码\16转8.c(99) : error C2106: '=' : left operand must be l-value
+执行 cl.exe 时出错.
+
+
+
+<h3>Results</h3>
+16转8.obj - 1 error(s), 0 warning(s)
+</pre>
+</body>
+</html>
