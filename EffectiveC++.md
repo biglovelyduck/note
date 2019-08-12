@@ -1,3 +1,5 @@
+> 转自大神笔记：https://github.com/arkingc/note
+
 * [一.让自己习惯C++](#一让自己习惯c)
     - [条款02：尽量以const,enum,inline替换\#define](#条款02尽量以constenuminline替换define)
     - [条款03：尽可能使用const](#条款03尽可能使用const)
@@ -545,7 +547,6 @@ FontHandle f2 = f1; //原意是想使用Font，复制一个RAII对象
 单一对象的内存布局一般而言不同于数组的内存布局。更明确地说，数组所用的内存通常还包括“数组大小”的记录，以便delete知道需要调用多少次析构函数，布局可能像下面这个样子：
 
 <div align="center"> <img src="../pic/cppeffective-3-1.png"/> </div>
-
 **当使用delete时，唯一能够让delete知道内存中是否存在一个“数组大小记录”的办法是，由你来告诉它。即加上\[\]，delete便认为指针指向一个数组，否则它便认为指针指向单一对象**
 
 因此，应该像这样使用new和delete
@@ -793,7 +794,6 @@ void clearEverything(WebBrowser& wb){
 一个像WebBrowser这样的class可能拥有大量便利函数，某些与书签有关，某些与打印有关，还有一些与cookie的管理有关...通常客户只对其中某些感兴趣。没道理一个只对书签相关便利函数感兴趣的客户却与一个cookie相关便利函数发生编译相依关系。分离它们的最直接做法就是将书签相关便利函数声明于一个头文件，将cookie相关便利函数声明于另一个头文件，再将打印相关...以此类推：
 
 <div align="center"> <img src="../pic/cppeffective-4-1.png"/> </div>
-
 这正是C++标准库的组织方式。标准库并不是拥有单一、整体、庞大的<C++StandardLibrary>头文件并在其中内含std命名空间内的每一样东西，而是有数十个头文件（\<vector\>,\<algorithm\>,...），每个头文件声明std的某些机能。客户可以根据需要使用的机能选择性的包含头文件
 
 <br>
@@ -842,15 +842,12 @@ result = 2 * oneHalf;                  // Error
 ”以指针指向一个对象，内含真正数据“。这种设计的常见表现形式是所谓的”pimpl手法“。如下，WidgetImpl包含了Widget的真正数据，而Widget只包含一个WidgetImpl类型的指针，指向一个WidgetImpl对象。这种设计特点，决定了Widget的copying行为应该表现出一种”深拷贝“的行为：
 
 <div align="center"> <img src="../pic/cppeffective-4-2.png"/> </div>
-
 因此，如果使用标准库的swap交换2个Widget对象，会引起WidgetImpl对象的拷贝，由于其内含有Widget的大量数据，因此效率可能十分低。实际上这种情况下，交换2个指针就可以了。为此，我们可能实现出下图右边中间的swap特化版来提升效率，但是由于其内直接访问Widget的private成员，因此无法通过编译。所以我们采用下图右下角的方案，在Widget类内实现一个public的swap函数，然后特化版的swap调用这个public的swap函数：
 
 <div align="center"> <img src="../pic/cppeffective-4-3.png"/> </div>
-
 当问题更进一步发展时，即Widget和WidgetImpl为class template时，可能会将相同的思想迁移过来，实现出下图右边左上角的偏特化版本。但是问题是：**C++只允许偏特化class template，而不允许偏特化function template**。所以行不通，因此可以使用下图右下角的重载方式，但是**客户可以全特化std内的模板，但是不能添加新的模板到std内**，因此正确的做法是下图左下角
 
 <div align="center"> <img src="../pic/cppeffective-4-4.png"/> </div>
-
 总结起来就是：
 
 * 首先，如果swap的缺省实现对你的class或class template提供可接受的效率，那不需要做额外的事
@@ -877,7 +874,6 @@ result = 2 * oneHalf;                  // Error
 当考虑循环时，有下列2种情况：
 
 <div align="center"> <img src="../pic/cppeffective-5-1.png"/> </div>
-
 2种写法的成本如下；
 
 * 做法A：1个构造函数 + 1个析构函数 + n个赋值操作
@@ -1306,23 +1302,19 @@ study(p);   //错误
 ### 1）继承中的作用域嵌套
 
 <div align="center"> <img src="../pic/cppeffective-6-1.png"/> </div>
-
 名字查找会从内层作用域向外层作用域延伸
 
 ### 2）名称遮掩会遮掩基类所有重载版本
 
 <div align="center"> <img src="../pic/cppeffective-6-2.png"/> </div>
-
 派生类中同名的名称会遮掩基类中相同的名称，如果基类包含重载函数，所有重载函数都会被遮掩
 
 解决办法是使用using引入被遮掩的名字：
 
 <div align="center"> <img src="../pic/cppeffective-6-3.png"/> </div>
-
 如果只想引入基类被遮掩函数中某个版本（注意，这种需求一般只在private继承中出现，因为如果只继承基类的部分操作，违背了[条款32](#条款32确定你的public继承塑模出is-a关系)），可以直接定义一个同名同参的函数，然后在这个函数内调用基类的版本，做一个转调用。这实际上称为一种实现技术(而不是引入)更为恰当：
 
 <div align="center"> <img src="../pic/cppeffective-6-4.png"/> </div>
-
 <br>
 
 ## 条款34：区分接口继承和实现继承
@@ -1503,7 +1495,6 @@ private:
 传统的Stategy模式做法会将健康计算函数做成一个分离的继承体系中的virtual成员函数，设计结果看起来像这样:
 
 <div align="center"> <img src="../pic/cppeffective-6-5.png"/> </div>
-
 <br>
 
 ```c++
