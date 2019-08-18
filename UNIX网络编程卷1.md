@@ -265,7 +265,7 @@ TCP/IP网络协议栈分为应用层（Application）、传输层（Transport）
 
 链路层有以太网、令牌环网等标准，链路层负责网卡设备的驱动、帧同步（即从网线上检测到什么信号算作新帧的开始）、冲突检测（如果检测到冲突就自动重发）、数据差错校验等工作。**交换机是工作在链路层的网络设备，可以在不同的链路层网络之间转发数据帧（比如十兆以太网和百兆以太网之间、以太网和令牌环网之间），由于不同链路层的帧格式不同，交换机要将进来的数据包拆掉链路层首部重新封装之后再转发。**
 
-网络层的IP协议是构成Internet的基础。Internet上的主机通过IP地址来标识，Internet上有大量路由器负责根据IP地址选择合适的路径转发数据包，数据包从Internet上的源主机到目的主机往往要经过十多个路由器。**路由器是工作在第三层的网络设备，同时兼有交换机的功能，可以在不同的链路层接口之间转发数据包**，因此路由器需要将进来的数据包拆掉网络层和链路层两层首部并重新封装。IP协议不保证传输的可靠性，数据包在传输过程中可能丢失，可靠性可以在上层协议或应用程序中提供支持。
+网络层的IP协议是构成Internet的基础。Internet上的主机通过IP地址来标识，**Internet上有大量路由器负责根据IP地址选择合适的路径转发数据包，数据包从Internet上的源主机到目的主机往往要经过十多个路由器**。**路由器是工作在第三层的网络设备，同时兼有交换机的功能，可以在不同的链路层接口之间转发数据包**，因此路由器需要将进来的数据包**拆掉网络层和链路层**两层首部并重新封装。IP协议不保证传输的可靠性，数据包在传输过程中可能丢失，可靠性可以在上层协议或应用程序中提供支持。
 
 **网络层负责点到点（ptop，point-to-point）的传输（这里的“点”指主机或路由器），而传输层负责端到端（etoe，end-to-end）的传输（这里的“端”指源主机和目的主机）。传输层可选择TCP或UDP协议。**
 
@@ -1350,6 +1350,169 @@ telnet: Unable to connect to remote host: Connection refused
 \4.       客户端发出段10，应答服务器的关闭连接请求。
 
 建立连接的过程是三方握手，而关闭连接通常需要4个段，服务器的应答和关闭连接请求通常不合并在一个段中，因为有连接半关闭的情况，这种情况下客户端关闭连接之后就不能再发送数据给服务器了，但是服务器还可以发送数据给客户端，直到服务器也关闭连接为止。
+
+### 滑动窗口（TCP流量控制）
+
+​		介绍UDP时我们描述了这样的问题：如果发送端发送的速度较快，接收端接收到数据后处理的速度较慢，而接收缓冲区的大小是固定的，就会丢失数据。TCP协议通过“滑动窗口（Sliding Window）”机制解决这一问题。看下图的通讯过程：
+
+![1566104212555](pic/1566104212555.png)
+
+\1.       发送端发起连接，声明最大段尺寸是1460，初始序号是0，**窗口大小是4K**，**表示“我的接收缓冲区还有4K字节空闲，你发的数据不要超过4K”。**接收端应答连接请求，声明最大段尺寸是1024，初始序号是8000，窗口大小是6K。发送端应答，三方握手结束。
+
+\2.       发送端发出段4-9，每个段带1K的数据，**发送端根据窗口大小知道接收端的缓冲区满了，因此停止发送数据。**
+
+\3.       接收端的应用程序**提走2K数据**，接收缓冲区又有了2K空闲，接收端发出段10，在应答已收到6K数据的同时声明窗口大小为2K。
+
+\4.       接收端的应用程序又提走2K数据，接收缓冲区有4K空闲，接收端发出段11，重新声明窗口大小为4K。
+
+\5.       发送端发出段12-13，每个段带2K数据，段13同时还包含FIN位。
+
+\6.       接收端应答接收到的2K数据（6145-8192），再加上FIN位占一个序号8193，因此应答序号是8194，连接处于半关闭状态，接收端同时声明窗口大小为2K。
+
+\7.       接收端的应用程序提走2K数据，接收端重新声明窗口大小为4K。
+
+\8.       接收端的应用程序提走剩下的2K数据，接收缓冲区全空，接收端重新声明窗口大小为6K。
+
+\9.       接收端的应用程序在提走全部数据后，**决定关闭连接**，发出段17包含FIN位，发送端应答，连接完全关闭。
+
+上图在接收端用小方块表示1K数据，实心的小方块表示已接收到的数据，**虚线框表示接收缓冲区**，因此套在虚线框中的空心小方块表示窗口大小，从图中可以看出，随着应用程序提走数据，虚线框是向右滑动的，因此称为滑动窗口。
+
+从这个例子还可以看出，**发送端是一K一K地发送数据，而接收端的应用程序可以两K两K地提走数据**，当然也有可能一次提走3K或6K数据，或者一次只提走几个字节的数据。也就是说，应用程序所看到的数据是一个整体，或说是一个流（stream），在底层通讯中这些数据可能被拆成很多数据包来发送，但是一个数据包有多少字节对应用程序是不可见的，因此TCP协议是面向流的协议。而UDP是面向消息的协议，每个UDP段都是一条消息，应用程序必须以消息为单位提取数据，不能一次提取任意字节的数据，这一点和TCP是很不同的。
+
+### TCP状态装换
+
+这个图N多人都知道，它排除和定位网络或系统故障时大有帮助，但是怎样牢牢地将这张图刻在脑中呢？那么你就一定要对这张图的每一个状态，及转换的过程有深刻的认识，不能只停留在一知半解之中。下面对这张图的11种状态详细解析一下，以便加强记忆！不过在这之前，先回顾一下TCP建立连接的三次握手过程，以及
+关闭连接的四次握手过程。
+
+![1566107513568](pic/1566107513568.png)
+
+**CLOSED**：表示初始状态。
+
+**LISTEN**：该状态表示服务器端的某个SOCKET处于监听状态，可以接受连接。
+
+**SYN_SENT**：这个状态与SYN_RCVD遥相呼应，当客户端SOCKET执行CONNECT连接时，它首先发送SYN报文，随即进入到了SYN_SENT状态，并等待服务端的发送三次握手中的第2个报文。SYN_SENT状态表示客户端已发送SYN报文。
+
+**SYN_RCVD:** 该状态表示接收到SYN报文，在正常情况下，这个状态是服务器端的SOCKET在建立TCP连接时的三次握手会话过程中的一个中间状态，很短暂。此种状态时，当收到客户端的ACK报文后，会进入到ESTABLISHED状态。
+
+**ESTABLISHED**：表示连接已经建立。
+
+**FIN_WAIT_1:**  FIN_WAIT_1和FIN_WAIT_2状态的真正含义都是表示等待对方的FIN报文。区别是：
+
+FIN_WAIT_1状态是当socket在ESTABLISHED状态时，想主动关闭连接，向对方发送了FIN报文，此时该socket进入到FIN_WAIT_1状态。
+
+FIN_WAIT_2状态是当对方回应ACK后，该socket进入到FIN_WAIT_2状态，正常情况下，对方应马上回应ACK报文，所以FIN_WAIT_1状态一般较难见到，而FIN_WAIT_2状态可用netstat看到。
+
+**FIN_WAIT_2**：**主动关闭链接的一方，发出FIN收到ACK以后进入该状态。称之为半连接或半关闭状态。该状态下的socket只能接收数据，不能发。**
+
+**TIME_WAIT:** 表示收到了对方的FIN报文，并发送出了ACK报文，等2MSL后即可回到CLOSED可用状态。如果FIN_WAIT_1状态下，收到对方同时带 FIN标志和ACK标志的报文时，可以直接进入到TIME_WAIT状态，而无须经过FIN_WAIT_2状态。
+
+**CLOSING:** 这种状态较特殊，属于一种较罕见的状态。正常情况下，当你发送FIN报文后，按理来说是应该先收到（或同时收到）对方的 ACK报文，再收到对方的FIN报文。但是CLOSING状态表示你发送FIN报文后，并没有收到对方的ACK报文，反而却也收到了对方的FIN报文。什么情况下会出现此种情况呢？如果双方几乎在同时close一个SOCKET的话，那么就出现了双方同时发送FIN报文的情况，也即会出现CLOSING状态，表示双方都正在关闭SOCKET连接。
+
+**CLOSE_WAIT:** 此种状态表示在等待关闭。当对方关闭一个SOCKET后发送FIN报文给自己，系统会回应一个ACK报文给对方，此时则进入到CLOSE_WAIT状态。接下来呢，察看是否还有数据发送给对方，如果没有可以 close这个SOCKET，发送FIN报文给对方，即关闭连接。所以在CLOSE_WAIT状态下，需要关闭连接。
+
+**LAST_ACK:** 该状态是被动关闭一方在发送FIN报文后，最后等待对方的ACK报文。当收到ACK报文后，即可以进入到CLOSED可用状态。
+
+### 半关闭
+
+当TCP链接中A发送FIN请求关闭，B端回应ACK后（A端进入FIN_WAIT_2状态），B没有立即发送FIN给A时，**A方处在半链接状态，此时A可以接收B发送的数据，但是A已不能再向B发送数据。**
+
+从程序的角度，可以使用API来控制实现半连接状态。
+
+```c++
+#include <sys/socket.h>
+int shutdown(int sockfd, int how);
+sockfd: 需要关闭的socket的描述符
+how:	允许为shutdown操作选择以下几种方式:
+	SHUT_RD(0)：	关闭sockfd上的读功能，此选项将不允许sockfd进行读操作。
+					该套接字不再接受数据，任何当前在套接字接受缓冲区的数据将被无声的丢弃掉。
+	SHUT_WR(1):		关闭sockfd的写功能，此选项将不允许sockfd进行写操作。进程不能在对此套接字发出写操作。
+	SHUT_RDWR(2):	关闭sockfd的读写功能。相当于调用shutdown两次：首先是以SHUT_RD,然后以SHUT_WR。
+```
+
+使用close中止一个连接，**但它只是减少描述符的引用计数，并不直接关闭连接，只有当描述符的引用计数为0时才关闭连接。**
+
+**shutdown不考虑描述符的引用计数，直接关闭描述符**。也可选择中止一个方向的连接，**只中止读或只中止写**。
+
+注意:
+
+\1.         如果有多个进程共享一个套接字，close每被调用一次，计数减1，直到计数为0时，也就是所用进程都调用了close，套接字将被释放。 
+
+\2.         在多进程中如果一个进程调用了shutdown(sfd, SHUT_RDWR)后，其它的进程将无法进行通信。但，如果一个进程close(sfd)将不会影响到其它进程。
+
+### 2MSL
+
+2MSL (Maximum Segment Lifetime) TIME_WAIT状态的存在有两个理由：
+
+（1）**让4次握手关闭流程更加可靠**；**4次握手的最后一个ACK是是由主动关闭方发送出去的，若这个ACK丢失，被动关闭方会再次发一个FIN过来。若主动关闭方能够保持一个2MSL的TIME_WAIT状态，则有更大的机会让丢失的ACK被再次发送出去。**
+
+（2）防止lost duplicate对后续新建正常链接的传输造成破坏。lost uplicate在实际的网络中非常常见，经常是由于路由器产生故障，**路径无法收敛，导致一个packet在路由器A，B，C之间做类似死循环的跳转**。IP头部有个**TTL，限制了一个包在网络中的最大跳数，因此这个包有两种命运，要么最后TTL变为0，在网络中消失；要么TTL在变为0之前路由器路径收敛，它凭借剩余的TTL跳数终于到达目的地**。但非常可惜的是TCP通过超时重传机制在早些时候发送了一个跟它一模一样的包，并先于它达到了目的地，因此它的命运也就注定被TCP协议栈抛弃。
+
+另外一个概念叫做incarnation connection，指跟上次的socket pair一摸一样的新连接，叫做incarnation of previous connection。lost uplicate加上incarnation connection，则会对我们的传输造成致命的错误。
+
+TCP是流式的，所有包到达的顺序是不一致的，依靠序列号由TCP协议栈做顺序的拼接；假设一个incarnation connection这时收到的seq=1000, 来了一个lost duplicate为seq=1000，len=1000, 则TCP认为这个lost duplicate合法，并存放入了receive buffer，导致传输出现错误。通过一个2MSL TIME_WAIT状态，确保所有的lost duplicate都会消失掉，避免对新连接造成错误。
+
+该状态为什么设计在**主动关闭这一方**：
+
+（1）发最后ACK的是主动关闭一方。
+
+（2）只要有一方保持TIME_WAIT状态，就能起到避免incarnation connection在2MSL内的重新建立，不需要两方都有。
+
+**如何正确对待2MSL TIME_WAIT?**
+
+RFC要求socket pair在处于TIME_WAIT时，不能再起一个incarnation connection。但绝大部分TCP实现，强加了更为严格的限制。在2MSL等待期间，socket中使用的本地端口在默认情况下不能再被使用。
+
+若`A 10.234.5.5 : 1234'和'B 10.55.55.60 : 6666`建立了连接，A主动关闭，那么在A端只要port为1234，无论对方的port和ip是什么，都不允许再起服务。这甚至比RFC限制更为严格，RFC仅仅是要求socket pair不一致，而实现当中只要这个port处于TIME_WAIT，就不允许起连接。这个限制对主动打开方来说是无所谓的，因为一般用的是临时端口；但对于被动打开方，一般是server，就悲剧了，因为server一般是熟知端口。比如http，一般端口是80，不可能允许这个服务在2MSL内不能起来。
+
+解决方案是给服务器的socket设置`SO_REUSEADDR`选项，这**样的话就算熟知端口处于TIME_WAIT状态，在这个端口上依旧可以将服务启动**。当然，虽然有了SO_REUSEADDR选项，但sockt pair这个限制依旧存在。比如上面的例子，A通过SO_REUSEADDR选项依旧在1234端口上起了监听，但这时我们若是从B通过6666端口去连它，TCP协议会告诉我们连接失败，原因为Address already in use.
+
+RFC 793中规定MSL为2分钟，实际应用中常用的是30秒，1分钟和2分钟等。
+
+RFC (Request For Comments)，是一系列以编号排定的文件。收集了有关因特网相关资讯，以及UNIX和因特网社群的[软件](http://baike.baidu.com/view/37.htm)文件。
+
+#### 程序设计中的问题 
+
+做一个测试，首先启动server，然后启动client，用Ctrl-C终止server，马上再运行server，运行结果：
+
+```shell
+itcast$ ./server
+bind error: Address already in use 
+```
+
+**这是因为，虽然server的应用程序终止了，但TCP协议层的连接并没有完全断开，因此不能再次监听同样的server端口。**我们用netstat命令查看一下：
+
+```shell
+itcast$ netstat -apn |grep 6666
+tcp  1  0 192.168.1.11:38103      192.168.1.11:6666       CLOSE_WAIT  3525/client     
+tcp  0  0 192.168.1.11:6666       192.168.1.11:38103      FIN_WAIT2   -    
+```
+
+server终止时，socket描述符会自动关闭并发FIN段给client，client收到FIN后处于CLOSE_WAIT状态，但是client并没有终止，也没有关闭socket描述符，因此不会发FIN给server，因此server的TCP连接处于FIN_WAIT2状态。
+
+现在用Ctrl-C把client也终止掉，再观察现象：
+
+```shell
+itcast$ netstat -apn |grep 6666
+tcp  0  0 192.168.1.11:6666       192.168.1.11:38104      TIME_WAIT   -
+itcast$ ./server
+bind error: Address already in use
+```
+
+client终止时自动关闭socket描述符，server的TCP连接收到client发的FIN段后处于TIME_WAIT状态。TCP协议规定，**主动关闭连接的一方要处于TIME_WAIT状态**，等待两个MSL（maximum segment lifetime）的时间后才能回到CLOSED状态，因为我们先Ctrl-C终止了server，所以server是主动关闭连接的一方，在TIME_WAIT期间仍然不能再次监听同样的server端口。
+
+MSL在RFC 1122中规定为两分钟，但是各操作系统的实现不同，在Linux上一般经过半分钟后就可以再次启动server了。至于为什么要规定TIME_WAIT的时间，可参考UNP 2.7节。
+
+#### 端口复用
+
+在server的TCP连接没有完全断开之前不允许重新监听是不合理的。因为，TCP连接没有完全断开指的是`connfd（127.0.0.1:6666）`没有完全断开，而我们重新监听的是`lis-tenfd（0.0.0.0:6666）`，虽然是占用同一个端口，但IP地址不同，connfd对应的是与某个客户端通讯的一个具体的IP地址，而listenfd对应的是wildcard address。**解决这个问题的方法是使用setsockopt()设置socket描述符的选项SO_REUSEADDR为1，表示允许创建端口号相同但IP地址不同的多个socket描述符。**
+
+在server代码的socket()和bind()调用之间插入如下代码：
+
+```c
+int opt = 1;
+setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+```
+
+有关setsockopt可以设置的其它选项请参考UNP第7章。
 
 ## 1.连接管理
 
@@ -3529,6 +3692,160 @@ int main(void)
 - ### client
 
 同上面
+
+## 3.多路I/O转接服务器
+
+多路IO转接服务器也叫做多任务IO服务器。该类服务器实现的主旨思想是，不再由应用程序自己监视客户端连接，取而代之由内核替应用程序监视文件。
+
+主要使用的方法有三种
+
+### select函数
+
+\1.       select能监听的文件描述符个数受限于FD_SETSIZE,一般为1024，单纯改变进程打开的文件描述符个数并不能改变select监听文件个数
+
+\2.       解决1024以下客户端时使用select是很合适的，但如果链接客户端过多，select采用的是轮询模型，会大大降低服务器响应效率，不应在select上投入更多精力
+
+```c
+#include <sys/select.h>
+/* According to earlier standards */
+#include <sys/time.h>
+#include <sys/types.h>
+#include <unistd.h>
+int select(int nfds, fd_set *readfds, fd_set *writefds,
+			fd_set *exceptfds, struct timeval *timeout);
+
+	nfds: 		监控的文件描述符集里最大文件描述符加1，因为此参数会告诉内核检测前多少个文件描述符的状态
+	readfds：	监控有读数据到达文件描述符集合，传入传出参数
+	writefds：	监控写数据到达文件描述符集合，传入传出参数
+	exceptfds：	监控异常发生达文件描述符集合,如带外数据到达异常，传入传出参数
+	timeout：	定时阻塞监控时间，3种情况
+				1.NULL，永远等下去
+				2.设置timeval，等待固定时间
+				3.设置timeval里时间均为0，检查描述字后立即返回，轮询
+	struct timeval {
+		long tv_sec; /* seconds */
+		long tv_usec; /* microseconds */
+	};
+	void FD_CLR(int fd, fd_set *set); 	//把文件描述符集合里fd清0
+	int FD_ISSET(int fd, fd_set *set); 	//测试文件描述符集合里fd是否置1
+	void FD_SET(int fd, fd_set *set); 	//把文件描述符集合里fd位置1
+	void FD_ZERO(fd_set *set); 			//把文件描述符集合里所有位清0
+```
+
+**seleect分析：**
+
+![1566136107184](pic/1566136107184.png)
+
+有三种情形：
+
+- 只有一个发送链接请求
+- 多个发送链接请求
+- 既发送链接请求，又发送数据
+
+- ### server
+
+```c
+/* server.c */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include "wrap.h"
+
+#define MAXLINE 80
+#define SERV_PORT 6666
+
+int main(int argc, char *argv[])
+{
+	int i, maxi, maxfd, listenfd, connfd, sockfd;//maxfd是select的第一个参数最大描述符，listenfd是用来接收链接的描述符
+	int nready, client[FD_SETSIZE]; 	/* FD_SETSIZE 默认为 1024,nready返回select读取到的请求，包括新连接和新数据；client数组用来防止遍历1024个文件描述符 */
+	ssize_t n;
+	fd_set rset, allset;
+	char buf[MAXLINE];
+	char str[INET_ADDRSTRLEN]; 			/* #define INET_ADDRSTRLEN 16 */
+	socklen_t cliaddr_len;
+	struct sockaddr_in cliaddr, servaddr;
+
+	listenfd = Socket(AF_INET, SOCK_STREAM, 0);		//listenfd一定会返回
+
+    bzero(&servaddr, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(SERV_PORT);
+
+    Bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+
+    Listen(listenfd, 20); 		/* 默认最大128 */
+
+    maxfd = listenfd; 			/* 初始化 */
+    maxi = -1;					/* client[]的下标 */
+
+    for (i = 0; i < FD_SETSIZE; i++)
+        client[i] = -1; 		/* 用-1初始化client[] */
+
+    FD_ZERO(&allset);
+    FD_SET(listenfd, &allset); /* 构造select监控文件描述符集，就是我内核到底要监控个什么玩意 */
+
+    for ( ; ; ) {
+        rset = allset; 			/* 每次循环时都从新设置select监控信号集，读事件锁监控的集合 */
+        nready = select(maxfd+1, &rset, NULL, NULL, NULL);	//关键！rset存放来的文件描述符
+
+        if (nready < 0)
+            perr_exit("select error");
+        if (FD_ISSET(listenfd, &rset)) { /*每次第一步就是先判断是否有新连接请求， new client connection */
+            cliaddr_len = sizeof(cliaddr);
+            //Accept不会阻塞
+            connfd = Accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+            printf("received from %s at PORT %d\n",
+                    inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
+                    ntohs(cliaddr.sin_port));
+            for (i = 0; i < FD_SETSIZE; i++) {
+                if (client[i] < 0) {
+                    client[i] = connfd; /*找client里没有使用的位置，存放客户的位置， 保存accept返回的文件描述符到client[]里 */
+                    break;
+                }
+            }
+            /* 达到select能监控的文件个数上限 1024 */
+            if (i == FD_SETSIZE) {
+                fputs("too many clients\n", stderr);
+                exit(1);
+            }
+
+            FD_SET(connfd, &allset); 	/* 添加一个新的文件描述符到监控信号集里 */
+            if (connfd > maxfd)
+                maxfd = connfd; 		/* select第一个参数需要 */
+			if (i > maxi)
+				maxi = i; 				/* 更新client[]最大下标值 */
+
+			if (--nready == 0)
+				continue; 				/* 如果没有更多的就绪文件描述符继续回到上面select阻塞监听,负责处理未处理完的就绪文件描述符，这个是用来判断有没有其他的客户端要连接 */
+		}
+		for (i = 0; i <= maxi; i++) { 	/* 检测哪个clients 有数据就绪 */
+			if ( (sockfd = client[i]) < 0)
+				continue;
+			if (FD_ISSET(sockfd, &rset)) {	//要发送数据的客户端在rest中
+				if ( (n = Read(sockfd, buf, MAXLINE)) == 0) {
+					Close(sockfd);		/* 当client关闭链接时，服务器端也关闭对应链接 */
+					FD_CLR(sockfd, &allset); /* 解除select监控此文件描述符 */
+					client[i] = -1;
+				} else {
+					int j;
+					for (j = 0; j < n; j++)
+						buf[j] = toupper(buf[j]);
+					Write(sockfd, buf, n);
+				}
+				if (--nready == 0)		//判断是不是还有别的客户端要发送数据
+					break;
+			}
+		}
+	}
+	close(listenfd);
+	return 0;
+}
+```
+
+
 
 # 附1.回射服务器程序
 
