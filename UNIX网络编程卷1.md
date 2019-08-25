@@ -3845,7 +3845,585 @@ int main(int argc, char *argv[])
 }
 ```
 
+### poll函数
 
+相当于select的升级版，监控某个时间
+
+![1566200569767](pic/1566200569767.png)
+
+```c
+#include <poll.h>
+int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+	struct pollfd {
+		int fd; /* 文件描述符 */
+		short events; /* 监控的事件 */
+		short revents; /* 监控事件中满足条件返回的事件 */
+	};
+
+	fds				要监控的pollfd的数组
+	
+	POLLIN			普通或带外优先数据可读,即POLLRDNORM | POLLRDBAND
+	POLLRDNORM		数据可读
+	POLLRDBAND		优先级带数据可读
+	POLLPRI 		高优先级可读数据
+	POLLOUT		普通或带外数据可写
+	POLLWRNORM		数据可写
+	POLLWRBAND		优先级带数据可写
+	POLLERR 		发生错误
+	POLLHUP 		发生挂起
+	POLLNVAL 		描述字不是一个打开的文件
+
+	nfds 			监控数组中有多少文件描述符需要被监控
+
+	timeout 		毫秒级等待
+		-1：阻塞等，#define INFTIM -1 				Linux中没有定义此宏
+		0：立即返回，不阻塞进程
+		>0：等待指定毫秒数，如当前系统时间精度不够毫秒，向上取值
+```
+
+如果不再监控某个文件描述符时，可以把pollfd中，fd设置为-1，poll不再监控此pollfd，下次返回时，把revents设置为0。
+
+```c
+//poll,select的升级版 
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include "wrap.h"
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <poll.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define MAXLINE 80
+#define SERV_PORT 8000
+#define OPEN_MAX 1024
+
+int main(int argc,char* avg[]){
+	int i,j,maxi,listenfd,connfd,sockfd;
+	struct sockaddr_in cliaddr,servaddr;
+	ssize_t n; 
+	socklen_t clielen;
+	struct pollfd client[OPEN_MAX];
+	char buf[MAXLINE],str[INET_ADDRSTRLEN];
+	int nready;			//接收poll的返回值，记录满足监听事件的fd个数
+	listenfd=Socket(AF_INET,SOCK_STREAM,0); 
+	
+	int opt=1;
+	setsockopt(listenfd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));	//SO_REUSEADDR 允许在bind()过程中本地地址可重复使用
+
+	bzero(&servaddr,sizeof(servaddr));
+	servaddr.sin_family=AF_INET;
+	servaddr.sin_addr.s_addr=htol(INADDR_ANY);
+	servaddr.sin_port=htos(SERV_PORT);
+	
+	Bind(listenfd,(struct sockaddr*)&servaddr,sizeof(servaddr));
+	Listen(listenfd,128); 
+	
+	client[0].fd=listenfd;		//要监听的第一个文件描述符，存入到client[0]
+	client[0].events=POLLIN;	//listenfd监听普通读事件
+	
+	for(i=1;i<OPEN_MAX;i++)
+		client[i].fd=-1;		//初始化client[]中剩下的元素
+	
+	maxi=0;
+	
+	while(true){
+		nready=poll(client,maxi+1,-1);	//阻塞监听是否有客户端连接请求
+		
+		if(client[0].revents&POLLIN){	//listenfd有读事件就绪 
+			clilen=sizeof(cliaddr);
+			connfd=Accept(listenfd,(struct sockaddr*)&cliaddr,&clielen);//接收客户端请求，不会阻塞 
+			printf("received from %s at PORT %d\n",
+                    inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
+                    ntohs(cliaddr.sin_port));
+                    
+            for(i=1;i<OPEN_MAX;i++){	//找到client[]中空闲的位置，存放accept返回的connfd 
+            	if(client[i].fd<0){
+            		client[i].fd=connfd;
+            		break;
+				} 
+			}
+			
+			if(i==OPEN_MAX)	perr_exit("too many clients.");	//达到了最大客户端数
+			
+			client[i].events=POLLIN;	//设置刚刚返回的connfd，监控读事件
+			if(i>maxi)	maxi=i;
+			if(--nready<=0)	continue; 
+		} 
+		
+		for(i=1;i<=maxi;i++){	//前面的if没满足，说明listenfd没满足，检测client[]看看是哪个要发送数据
+			if((sockfd=client[i].fd)<0)	continue;
+			if(client[i].revents&POLLIN){
+				if((n=Read(sockfd,buf,MAXLINE))<0){
+					//connection reset by client
+					if(errno==ECONNRESET){	//收到RST标志 
+						printf("client[%d] aborted connection\n", i);
+						Close(sockfd);
+						client[i].fd=-1;
+					}
+					else
+						perr_exit("read error.");
+				}
+				else if(n==0){	//说明客户端先关闭连接 
+					printf("client[%d] closed connection\n", i);
+                    Close(sockfd);
+                    client[i].fd = -1;
+				}
+				else {
+                    for (j = 0; j < n; j++)
+                        buf[j] = toupper(buf[j]);
+                    Writen(sockfd, buf, n);
+                }
+                if (--nready <= 0)
+                    break;
+			}	
+		}
+	} 
+	
+	return 0;
+}
+```
+
+**ppoll函数：**
+
+GNU定义了ppoll（非POSIX标准），可以支持设置信号屏蔽字，大家可参考poll模型自行实现C/S。
+
+```c
+#define _GNU_SOURCE /* See feature_test_macros(7) */
+#include <poll.h>
+int ppoll(struct pollfd *fds, nfds_t nfds,
+const struct timespec *timeout_ts, const sigset_t *sigmask);
+```
+
+### epoll函数
+
+​		epoll是Linux下多路复用IO接口select/poll的增强版本，**它能显著提高程序在大量并发连接中只有少量活跃的情况下的系统CPU利用率，因为它会复用文件描述符集合来传递结果而不用迫使开发者每次等待事件之前都必须重新准备要被侦听的文件描述符集合**，另一点原因就是获取事件的时候，它无须遍历整个被侦听的描述符集，只要遍历那些被内核IO事件异步唤醒而加入Ready队列的描述符集合就行了。
+
+目前epell是linux大规模并发网络程序中的热门首选模型。
+
+epoll除了提供select/poll那种IO事件的电平触发（Level Triggered）外，还提供了边沿触发（Edge Triggered），这就使得用户空间程序有可能缓存IO状态，减少epoll_wait/epoll_pwait的调用，提高应用程序效率。
+
+可以使用cat命令查看一个进程可以打开的socket描述符上限。
+
+`cat/proc/sys/fs/file-max`
+
+如有需要，可以通过修改配置文件的方式修改该上限值。
+
+```shell
+sudo vi /etc/security/limits.conf
+在文件尾部写入以下配置,soft软限制，hard硬限制。如下图所示。
+* soft nofile 65536
+* hard nofile 100000
+```
+
+![1566738664438](pic/1566738664438.png)
+
+#### 基础API
+
+1. 创建一个epoll句柄，参数size用来告诉内核监听的文件描述符的个数，跟内存大小有关
+
+```c
+#include <sys/epoll.h>
+int epoll_create(int size)      size：监听数目
+```
+
+2. 控制某个epoll监控的文件描述符上的事件：注册、修改、删除。
+
+```c
+#include <sys/epoll.h>
+	int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
+		epfd：	为epoll_creat的句柄
+		op：		表示动作，用3个宏来表示：
+			EPOLL_CTL_ADD (注册新的fd到epfd)，
+			EPOLL_CTL_MOD (修改已经注册的fd的监听事件)，
+			EPOLL_CTL_DEL (从epfd删除一个fd)；
+		event：	告诉内核需要监听的事件的集合
+
+		struct epoll_event {
+			__uint32_t events; /* Epoll events :EPOLLIN/OUT/ERR*/
+			epoll_data_t data; /* User data variable */
+		};
+		typedef union epoll_data {
+			void *ptr;				//
+			int fd;					//判定是哪个文件描述符
+			uint32_t u32;
+			uint64_t u64;
+		} epoll_data_t;
+
+		EPOLLIN ：	表示对应的文件描述符可以读（包括对端SOCKET正常关闭）
+		EPOLLOUT：	表示对应的文件描述符可以写
+		EPOLLPRI：	表示对应的文件描述符有紧急的数据可读（这里应该表示有带外数据到来）
+		EPOLLERR：	表示对应的文件描述符发生错误
+		EPOLLHUP：	表示对应的文件描述符被挂断；
+		EPOLLET： 	将EPOLL设为边缘触发(Edge Triggered)模式，这是相对于水平触发(Level Triggered)而言的
+		EPOLLONESHOT：只监听一次事件，当监听完这次事件之后，如果还需要继续监听这个socket的话，需要再次把这个socket加入到EPOLL队列里。
+```
+
+3. 等待所监控文件描述符上有事件的产生，类似于select()调用。
+
+```c
+#include <sys/epoll.h>
+	int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
+		events：		用来存内核得到事件的集合，
+		maxevents：	告之内核这个events有多大，这个maxevents的值不能大于创建epoll_create()时的size，
+		timeout：	是超时时间
+			-1：	阻塞
+			0：	立即返回，非阻塞
+			>0：	指定毫秒
+		返回值：	成功返回有多少文件描述符就绪，时间到时返回0，出错返回-1
+```
+
+![1566739645596](pic/1566739645596.png)
+
+- #### server
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h>
+#include <errno.h>
+#include "wrap.h"
+
+#define MAXLINE 80
+#define SERV_PORT 6666
+#define OPEN_MAX 1024
+
+int main(int argc, char *argv[])
+{
+	int i, j, maxi, listenfd, connfd, sockfd;
+	int nready, efd, res;
+	ssize_t n;
+	char buf[MAXLINE], str[INET_ADDRSTRLEN];
+	socklen_t clilen;
+	int client[OPEN_MAX];
+	struct sockaddr_in cliaddr, servaddr;
+	struct epoll_event tep, ep[OPEN_MAX];	//tep:epol_ctl参数  ep[]:epoll_wait参数
+
+	listenfd = Socket(AF_INET, SOCK_STREAM, 0);
+    
+    int opt=1;
+    setsockopt(listenfd,SOL_SOCKET,SO_REUSERADDR,&opt,sizeof(opt));	//解决端口复用
+
+	bzero(&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	servaddr.sin_port = htons(SERV_PORT);
+
+	Bind(listenfd, (struct sockaddr *) &servaddr, sizeof(servaddr));
+
+	Listen(listenfd, 20);
+
+	for (i = 0; i < OPEN_MAX; i++)
+		client[i] = -1;
+	maxi = -1;
+
+	efd = epoll_create(OPEN_MAX);		//创建epoll模型，efd指向红黑树树根
+	if (efd == -1)
+		perr_exit("epoll_create");
+
+	tep.events = EPOLLIN; tep.data.fd = listenfd;//指定lfd的监听事件为“读”
+	//将lfd及对应的结点的结构体设置到树上，efd可找到该树
+	res = epoll_ctl(efd, EPOLL_CTL_ADD, listenfd, &tep);
+	if (res == -1)
+		perr_exit("epoll_ctl");
+
+	while (1) {
+        //epoll为server阻塞监听事件，ep为struct epoll_event类型数组，传入为空，传出的时候会带出监听到的时间，OPEN_MAX为数组容量，-1表示永久阻塞
+		nready = epoll_wait(efd, ep, OPEN_MAX, -1); /* 阻塞监听 */
+		if (nready == -1)
+			perr_exit("epoll_wait");
+
+		for (i = 0; i < nready; i++) {
+			if (!(ep[i].events & EPOLLIN))	//如果不是“读”事件，继续循环
+				continue;
+			if (ep[i].data.fd == listenfd) {	//判断满足时间的fd是不是lfd
+				clilen = sizeof(cliaddr);
+                //接受连接
+				connfd = Accept(listenfd, (struct sockaddr *)&cliaddr, &clilen);
+				printf("received from %s at PORT %d\n", 
+						inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)), 
+						ntohs(cliaddr.sin_port));
+				for (j = 0; j < OPEN_MAX; j++) {
+					if (client[j] < 0) {
+						client[j] = connfd; /* save descriptor */
+						break;
+					}
+				}
+
+				if (j == OPEN_MAX)
+					perr_exit("too many clients");
+				if (j > maxi)
+					maxi = j; 		/* max index in client[] array */
+				
+                //将客户端socket添加到树上，来监听
+				tep.events = EPOLLIN; 
+				tep.data.fd = connfd;
+				res = epoll_ctl(efd, EPOLL_CTL_ADD, connfd, &tep);
+				if (res == -1)
+					perr_exit("epoll_ctl");
+			} else {						//不是lfd，说明客户端发来消息
+				sockfd = ep[i].data.fd;
+				n = Read(sockfd, buf, MAXLINE);	//读到buf
+				if (n == 0) {					//读到0，说明客户端关闭连接
+					for (j = 0; j <= maxi; j++) {	//初始化描述符
+						if (client[j] == sockfd) {
+							client[j] = -1;
+							break;
+						}
+					}
+                    //将该文件描述符从树上摘除
+					res = epoll_ctl(efd, EPOLL_CTL_DEL, sockfd, NULL);
+					if (res == -1)
+						perr_exit("epoll_ctl");
+
+					Close(sockfd);
+					printf("client[%d] closed connection\n", j);
+				} else {		//实际读到的字节数
+					for (j = 0; j < n; j++)
+						buf[j] = toupper(buf[j]);
+					Writen(sockfd, buf, n);
+				}
+			}
+		}
+	}
+	close(listenfd);
+	close(efd);
+	return 0;
+}
+```
+
+#### epoll进阶
+
+- ##### 事件模型
+
+  EPOLL事件有两种模型：
+
+  Edge Triggered (ET) ，边缘触发：只有数据到来才触发，不管缓存区中是否还有数据。
+
+  Level Triggered (LT) ，水平触发：只要有数据都会触发。
+
+  思考如下步骤：
+
+  \1.       假定我们已经把一个用来从管道中读取数据的文件描述符(RFD)添加到epoll描述符。
+
+  \2.       管道的另一端写入了2KB的数据
+
+  \3.       调用epoll_wait，并且它会返回RFD，说明它已经准备好读取操作
+
+  \4.       读取1KB的数据
+
+  \5.       调用epoll_wait……
+
+  在这个过程中，有两种工作模式：
+
+  - **ET模式**
+
+    ET模式即Edge Triggered工作模式。
+
+    如果我们在第1步将RFD添加到epoll描述符的时候使用了EPOLLET标志，那么在第5步调用epoll_wait之后将有可能会挂起，因为剩余的数据还存在于文件的输入缓冲区内，而且数据发出端还在等待一个针对已经发出数据的反馈信息。只有在监视的文件句柄上发生了某个事件的时候 ET 工作模式才会汇报事件。因此在第5步的时候，调用者可能会放弃等待仍在存在于文件输入缓冲区内的剩余数据。epoll工作在ET模式的时候，必须使用非阻塞套接口，**以避免由于一个文件句柄的阻塞读/阻塞写操作把处理多个文件描述符的任务饿死**。最好以下面的方式调用ET模式的epoll接口，在后面会介绍避免可能的缺陷。
+
+    1)       基于**非阻塞**文件句柄
+
+    2)       只有当read或者write返回EAGAIN(非阻塞读，暂时无数据)时才需要挂起、等待。但这并不是说每次read时都需要循环读，直到读到产生一个EAGAIN才认为此次事件处理完成，当read返回的读到的数据长度小于请求的数据长度时，就可以确定此时缓冲中已没有数据了，也就可以认为此事读事件已处理完成。
+
+  - **LT模式**：默认的模式
+
+    LT模式即Level Triggered工作模式。
+
+    与ET模式不同的是，以LT方式调用epoll接口的时候，它就相当于一个速度比较快的poll，无论后面的数据是否被使用。
+
+    LT(level triggered)：LT是缺省的工作方式，并且同时支持block和no-block socket。在这种做法中，内核告诉你一个文件描述符是否就绪了，然后你可以对这个就绪的fd进行IO操作。如果你不作任何操作，内核还是会继续通知你的，所以，这种模式编程出错误可能性要小一点。传统的select/poll都是这种模型的代表。
+
+    ET(edge-triggered)：ET是高速工作方式，只支持no-block socket。在这种模式下，当描述符从未就绪变为就绪时，内核通过epoll告诉你。然后它会假设你知道文件描述符已经就绪，并且不会再为那个文件描述符发送更多的就绪通知。请注意，如果一直不对这个fd作IO操作(从而导致它再次变成未就绪)，内核不会发送更多的通知(only once).
+
+    ![1566743911470](pic/1566743911470.png)
+
+  **练习1：**基于管道的epoll ET触发模式：
+
+  ```c++
+  #include <stdio.h>
+  #include <stdlib.h>
+  #include <sys/epoll.h>
+  #include <errno.h>
+  #include <unistd.h>
+  
+  #define MAXLINE 10
+  
+  int main(int argc, char *argv[])
+  {
+  	int efd, i;
+  	int pfd[2];
+  	pid_t pid;
+  	char buf[MAXLINE], ch = 'a';
+  
+  	pipe(pfd);
+  	pid = fork();
+  	if (pid == 0) {
+  		close(pfd[0]);
+  		while (1) {
+  			for (i = 0; i < MAXLINE/2; i++)
+  				buf[i] = ch;
+  			buf[i-1] = '\n';
+  			ch++;
+  
+  			for (; i < MAXLINE; i++)
+  				buf[i] = ch;
+  			buf[i-1] = '\n';
+  			ch++;
+  
+  			write(pfd[1], buf, sizeof(buf));
+  			sleep(2);
+  		}
+  		close(pfd[1]);
+  	} else if (pid > 0) {
+  		struct epoll_event event;
+  		struct epoll_event resevent[10];
+  		int res, len;
+  		close(pfd[1]);
+  
+  		efd = epoll_create(10);
+  		/* event.events = EPOLLIN; */
+  		event.events = EPOLLIN | EPOLLET;		/* ET 边沿触发 ，默认是水平触发 */
+  		event.data.fd = pfd[0];
+  		epoll_ctl(efd, EPOLL_CTL_ADD, pfd[0], &event);
+  
+  		while (1) {
+  			res = epoll_wait(efd, resevent, 10, -1);
+  			printf("res %d\n", res);
+  			if (resevent[0].data.fd == pfd[0]) {
+  				len = read(pfd[0], buf, MAXLINE/2);
+  				write(STDOUT_FILENO, buf, len);
+  			}
+  		}
+  		close(pfd[0]);
+  		close(efd);
+  	} else {
+  		perror("fork");
+  		exit(-1);
+  	}
+  	return 0;
+  }
+  ```
+
+  **练习2**：基于网络C/S模型的epoll ET触发模式
+
+  **server：**        
+
+  ```c
+  #include <stdio.h>
+  #include <string.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <signal.h>
+  #include <sys/wait.h>
+  #include <sys/types.h>
+  #include <sys/epoll.h>
+  #include <unistd.h>
+  
+  #define MAXLINE 10
+  #define SERV_PORT 8080
+  
+  int main(void)
+  {
+  	struct sockaddr_in servaddr, cliaddr;
+  	socklen_t cliaddr_len;
+  	int listenfd, connfd;
+  	char buf[MAXLINE];
+  	char str[INET_ADDRSTRLEN];
+  	int i, efd;
+  
+  	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+  
+  	bzero(&servaddr, sizeof(servaddr));
+  	servaddr.sin_family = AF_INET;
+  	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  	servaddr.sin_port = htons(SERV_PORT);
+  
+  	bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+  
+  	listen(listenfd, 20);
+  //================================================================================
+  	struct epoll_event event;
+  	struct epoll_event resevent[10];
+  	int res, len;
+  	efd = epoll_create(10);
+  	event.events = EPOLLIN | EPOLLET;		/* ET 边沿触发 ，默认是水平触发 */
+  
+  	printf("Accepting connections ...\n");
+  	cliaddr_len = sizeof(cliaddr);
+  	connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+  	printf("received from %s at PORT %d\n",
+  			inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
+  			ntohs(cliaddr.sin_port));
+  
+  	event.data.fd = connfd;
+  	epoll_ctl(efd, EPOLL_CTL_ADD, connfd, &event);	//将connfd添加到树上，来监听
+  
+  	while (1) {
+  		res = epoll_wait(efd, resevent, 10, -1);
+  		printf("res %d\n", res);
+  		if (resevent[0].data.fd == connfd) {
+  			len = read(connfd, buf, MAXLINE/2);
+  			write(STDOUT_FILENO, buf, len);
+  		}
+  	}
+  	return 0;
+  }
+  
+  ```
+
+  **client：**
+
+  ```c
+  //相当于上个管道的子进程的做法
+  #include <stdio.h>
+  #include <string.h>
+  #include <unistd.h>
+  #include <netinet/in.h>
+  
+  #define MAXLINE 10
+  #define SERV_PORT 8080
+  
+  int main(int argc, char *argv[])
+  {
+  	struct sockaddr_in servaddr;
+  	char buf[MAXLINE];
+  	int sockfd, i;
+  	char ch = 'a';
+  
+  	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  
+  	bzero(&servaddr, sizeof(servaddr));
+  	servaddr.sin_family = AF_INET;
+  	inet_pton(AF_INET, "127.0.0.1", &servaddr.sin_addr);
+  	servaddr.sin_port = htons(SERV_PORT);
+  
+  	connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+  
+  	while (1) {
+  		for (i = 0; i < MAXLINE/2; i++)
+  			buf[i] = ch;
+  		buf[i-1] = '\n';
+  		ch++;
+  
+  		for (; i < MAXLINE; i++)
+  			buf[i] = ch;
+  		buf[i-1] = '\n';
+  		ch++;
+  
+  		write(sockfd, buf, sizeof(buf));
+  		sleep(10);
+  	}
+  	Close(sockfd);
+  	return 0;
+  }
+  ```
+
+  
 
 # 附1.回射服务器程序
 
