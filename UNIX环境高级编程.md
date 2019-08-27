@@ -6,6 +6,8 @@
 <br>
 
 [TOC]
+最全vi：https://blog.csdn.net/qq_30214939/article/details/73012738
+
 # 一.文件I/O
 
 本章描述的函数经常被称为**不带缓冲的I/O**，不带缓冲值的是每个read和write都调用内核中的一个系统调用。这些不带缓冲的I/O函数不是ISO C的组成部分，它们是POSIX.1和Single UNIX Specification的组成部分

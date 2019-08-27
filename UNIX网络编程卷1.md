@@ -4066,7 +4066,7 @@ int epoll_create(int size)      size：监听数目
 #include <sys/epoll.h>
 	int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 		events：		用来存内核得到事件的集合，
-		maxevents：	告之内核这个events有多大，这个maxevents的值不能大于创建epoll_create()时的size，
+		maxevents：	告之需要监听的events最大值，这个maxevents的值不能大于创建epoll_create()时的size，
 		timeout：	是超时时间
 			-1：	阻塞
 			0：	立即返回，非阻塞
@@ -4423,6 +4423,124 @@ int main(int argc, char *argv[])
   }
   ```
 
+  **练习3：**基于网络C/S非阻塞模型的epoll ET触发模式
+  
+  **server：**
+  
+  ```c
+  #include <stdio.h>
+  #include <string.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <sys/wait.h>
+  #include <sys/types.h>
+  #include <sys/epoll.h>
+  #include <unistd.h>
+  #include <fcntl.h>
+  
+  #define MAXLINE 10
+  #define SERV_PORT 8080
+  
+  int main(void)
+  {
+  	struct sockaddr_in servaddr, cliaddr;
+  	socklen_t cliaddr_len;
+  	int listenfd, connfd;
+  	char buf[MAXLINE];
+  	char str[INET_ADDRSTRLEN];
+  	int i, efd, flag;
+  
+  	listenfd = socket(AF_INET, SOCK_STREAM, 0);
+  
+  	bzero(&servaddr, sizeof(servaddr));
+  	servaddr.sin_family = AF_INET;
+  	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+  	servaddr.sin_port = htons(SERV_PORT);
+  
+  	bind(listenfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+  
+  	listen(listenfd, 20);
+  
+  	struct epoll_event event;
+  	struct epoll_event resevent[10];
+  	int res, len;
+  	efd = epoll_create(10);
+  	/* event.events = EPOLLIN; */
+  	event.events = EPOLLIN | EPOLLET;		/* ET 边沿触发 ，默认是水平触发 */
+  
+  	printf("Accepting connections ...\n");
+  	cliaddr_len = sizeof(cliaddr);
+  	connfd = accept(listenfd, (struct sockaddr *)&cliaddr, &cliaddr_len);
+  	printf("received from %s at PORT %d\n",
+  			inet_ntop(AF_INET, &cliaddr.sin_addr, str, sizeof(str)),
+  			ntohs(cliaddr.sin_port));
+  
+  	flag = fcntl(connfd, F_GETFL);
+  	flag |= O_NONBLOCK;			
+  	fcntl(connfd, F_SETFL, flag);			//修改connfd为非阻塞读
+  	event.data.fd = connfd;
+  	epoll_ctl(efd, EPOLL_CTL_ADD, connfd, &event);
+  
+  	while (1) {
+  		printf("epoll_wait begin\n");
+  		res = epoll_wait(efd, resevent, 10, -1);	//最多10个阻塞监听
+  		printf("epoll_wait end res %d\n", res);
+  
+  		if (resevent[0].data.fd == connfd) {
+  			while ((len = read(connfd, buf, MAXLINE/2)) > 0)	//非阻塞读，轮询
+  				write(STDOUT_FILENO, buf, len);
+  		}
+  	}
+  	return 0;
+  }
+  ```
+  
+  **client:**
+  
+  ```c
+  #include <stdio.h>
+  #include <string.h>
+  #include <unistd.h>
+  #include <netinet/in.h>
+  
+  #define MAXLINE 10
+  #define SERV_PORT 8080
+  
+  int main(int argc, char *argv[])
+  {
+  	struct sockaddr_in servaddr;
+  	char buf[MAXLINE];
+  	int sockfd, i;
+  	char ch = 'a';
+  
+  	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+  
+  	bzero(&servaddr, sizeof(servaddr));
+  	servaddr.sin_family = AF_INET;
+  	inet_pton(AF_INET, "127.0.0.1", &servaddr.sin_addr);
+  	servaddr.sin_port = htons(SERV_PORT);
+  
+  	connect(sockfd, (struct sockaddr *)&servaddr, sizeof(servaddr));
+  
+  	while (1) {
+  		for (i = 0; i < MAXLINE/2; i++)
+  			buf[i] = ch;
+  		buf[i-1] = '\n';
+  		ch++;
+  
+  		for (; i < MAXLINE; i++)
+  			buf[i] = ch;
+  		buf[i-1] = '\n';
+  		ch++;
+  
+  		write(sockfd, buf, sizeof(buf));
+  		sleep(3);
+  	}
+  	Close(sockfd);
+  	return 0;
+  }
+  ```
+  
   
 
 # 附1.回射服务器程序

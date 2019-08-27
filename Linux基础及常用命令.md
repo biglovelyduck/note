@@ -763,7 +763,7 @@ alias:查看命令是否被封装：alias ls
 **ssh服务器：**远程登录访问服务器
 $:ssh username@ip
 
-### vi：
+### vi
 
 vi和vim：vim是vi发展过来的一款文本编辑器
 
