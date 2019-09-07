@@ -1827,6 +1827,29 @@ TCP要再次调用connect必须先close套接字再重新调用socket创建套�
 
 **连接与不连接的性能**：当应用进程在**一个未连接的UDP套接字上调用sendto时，源自Berkeley的内核暂时连接该套接字，发送数据报，然后断开该连接**。因此，当应用进程要给同一目的地址发送多个数据报时，使用连接套接字可以获得更高的效率
 
+## 3.其他
+
+传输层主要应用的协议模型有两种，一种是TCP协议，另外一种则是UDP协议。TCP协议在网络通信中占主导地位，绝大多数的网络通信借助TCP协议完成数据传输。但UDP也是网络通信中不可或缺的重要通信手段。
+
+相较于TCP而言，UDP通信的形式更像是发短信。不需要在数据传输之前建立、维护连接。只专心获取数据就好。省去了三次握手的过程，通信速度可以大大提高，但与之伴随的通信的稳定性和正确率便得不到保证。因此，我们称UDP为“无连接的不可靠报文传递”。
+
+那么与我们熟知的TCP相比，UDP有哪些优点和不足呢？由于无需创建连接，所以UDP开销较小，数据传输速度快，实时性较强。多用于对实时性要求较高的通信场合，如视频会议、电话会议等。但随之也伴随着数据传输不可靠，传输数据的正确率、传输顺序和流量都得不到控制和保证。所以，通常情况下，使用UDP协议进行数据传输，为保证数据的正确性，我们需要在应用层添加辅助校验协议来弥补UDP的不足，以达到数据可靠传输的目的。
+
+与TCP类似的，UDP也有可能出现缓冲区被填满后，再接收数据时丢包的现象。由于它没有TCP滑动窗口的机制，通常采用如下两种方法解决：
+
+1)         服务器应用层设计流量控制，控制发送数据速度。
+
+2)         借助setsockopt函数改变接收缓冲区大小。如：
+
+```c
+#include <sys/socket.h>
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+	int n = 220x1024
+	setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &n, sizeof(n));
+```
+
+### C/S模型UDP
+
 <br>
 <br>
 
@@ -3327,6 +3350,10 @@ pKey数组的所有元素都被初始化为空指针。这128个指针是和进�
 
 <br>
 
+
+
+
+
 <h2 id="ch11"></h2>
 # 十一.客户/服务器程序设计范式
 
@@ -3847,7 +3874,7 @@ int main(int argc, char *argv[])
 
 ### poll函数
 
-相当于select的升级版，监控某个时间
+相当于select的升级版，监控某个事件
 
 ![1566200569767](pic/1566200569767.png)
 
@@ -4045,7 +4072,7 @@ int epoll_create(int size)      size：监听数目
 			epoll_data_t data; /* User data variable */
 		};
 		typedef union epoll_data {
-			void *ptr;				//
+			void *ptr;				//可以指向自定义的结构体指针
 			int fd;					//判定是哪个文件描述符
 			uint32_t u32;
 			uint64_t u64;
@@ -4541,7 +4568,693 @@ int main(int argc, char *argv[])
   }
   ```
   
-  
+
+##### epoll反应堆模型代码分析
+
+```c
+/*
+ *epoll基于非阻塞I/O事件驱动
+ * epoll_event{
+ *      event;
+ *      data;   //联合体
+ * }
+ */
+#include <stdio.h>
+#include <sys/socket.h>
+#include <sys/epoll.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+#define MAX_EVENTS  1024                                    //监听上限数
+#define BUFLEN 4096
+#define SERV_PORT   8080
+
+void recvdata(int fd, int events, void *arg);
+void senddata(int fd, int events, void *arg);
+
+/* 描述就绪文件描述符相关信息 */
+
+struct myevent_s {
+    int fd;                                                 //要监听的文件描述符
+    int events;                                             //对应的监听事件,EPOLLIN,EPOLLOUT
+    void *arg;                                              //泛型参数，指向它自己
+    void (*call_back)(int fd, int events, void *arg);       //回调函数
+    int status;                                             //是否在监听:1->在红黑树上(监听), 0->不在(不监听)
+    char buf[BUFLEN];
+    int len;
+    long last_active;                                       //记录每次加入红黑树 g_efd 的时间值，记录时间值如果一直不干事，就踢掉
+};
+
+int g_efd;                                                  //全局变量, 保存epoll_create返回的文件描述符，树根
+struct myevent_s g_events[MAX_EVENTS+1];                    //自定义结构体类型数组. +1-->listen fd，监听的客户端
+
+
+/*将结构体 myevent_s 成员变量 初始化*/
+
+void eventset(struct myevent_s *ev, int fd, void (*call_back)(int, int, void *), void *arg)
+{
+    ev->fd = fd;
+    ev->call_back = call_back;                          //设置某个事件对应的回调函数
+    ev->events = 0;
+    ev->arg = arg;                                      //回调函数对应的参数，就是他自己
+    ev->status = 0;
+    memset(ev->buf, 0, sizeof(ev->buf));                //初始化自己的buf
+    ev->len = 0;
+    ev->last_active = time(NULL);                       //调用eventset函数的时间
+    return;
+}
+
+/* 向epoll监听的红黑树 添加一个文件描述符 */
+
+void eventadd(int efd, int events, struct myevent_s *ev)
+{
+    struct epoll_event epv = {0, {0}};      //初始化
+    int op;
+    epv.data.ptr = ev;                      //ptr指向事件描述符对应的结构体
+    epv.events = ev->events = events;       //EPOLLIN 或 EPOLLOUT
+
+    if (ev->status == 1) {                  //已经在红黑树 g_efd 里
+        op = EPOLL_CTL_MOD;                 //修改其属性，op是对应的操作
+    } else {                                //不在红黑树里
+        op = EPOLL_CTL_ADD;                 //将其加入红黑树g_efd, 并将status置1
+        ev->status = 1;
+    }
+
+    if (epoll_ctl(efd, op, ev->fd, &epv) < 0)                       //实际添加/修改
+        printf("event add failed [fd=%d], events[%d]\n", ev->fd, events);
+    else
+        printf("event add OK [fd=%d], op=%d, events[%0X]\n", ev->fd, op, events);
+
+    return ;
+}
+
+/* 从epoll 监听的 红黑树中删除一个 文件描述符*/
+
+void eventdel(int efd, struct myevent_s *ev)
+{
+    struct epoll_event epv = {0, {0}};
+
+    if (ev->status != 1)                                        //不在红黑树上
+        return ;
+
+    epv.data.ptr = ev;
+    ev->status = 0;                                             //修改状态
+    epoll_ctl(efd, EPOLL_CTL_DEL, ev->fd, &epv);                //从红黑树 efd 上将 ev->fd 摘除
+
+    return ;
+}
+
+/*  当有文件描述符就绪, epoll返回, 调用该函数 与客户端建立链接 */
+void acceptconn(int lfd, int events, void *arg)
+{
+    struct sockaddr_in cin;                                     //用来获取连接上的客户端的ip和端口号
+    socklen_t len = sizeof(cin);
+    int cfd, i;
+
+    if ((cfd = accept(lfd, (struct sockaddr *)&cin, &len)) == -1) {     //返回连接上客户端的文件描述符
+        if (errno != EAGAIN && errno != EINTR) {                        //cfd没有发送数据，只是刚连上，因为是非阻塞
+            /* 暂时不做出错处理 */
+        }
+        printf("%s: accept, %s\n", __func__, strerror(errno));          //连接出错
+        return ;
+    }
+
+    do {
+        for (i = 0; i < MAX_EVENTS; i++)                                //从全局数组g_events中找一个空闲元素
+            if (g_events[i].status == 0)                                //类似于select中找值为-1的元素
+                break;                                                  //跳出 for
+
+        if (i == MAX_EVENTS) {                                          //没有空闲位置了
+            printf("%s: max connect limit[%d]\n", __func__, MAX_EVENTS);
+            break;                                                      //跳出do while(0) 不执行后续代码
+        }
+
+        int flag = 0;
+        if ((flag = fcntl(cfd, F_SETFL, O_NONBLOCK)) < 0) {             //将cfd也设置为非阻塞
+            printf("%s: fcntl nonblocking failed, %s\n", __func__, strerror(errno));
+            break;
+        }
+
+        /* 给cfd设置一个myevent_s 结构体, 回调函数 设置为recvdata */
+
+        eventset(&g_events[i], cfd, recvdata, &g_events[i]);            //设置事件为读数据
+        eventadd(g_efd, EPOLLIN, &g_events[i]);                         //将cfd添加到红黑树g_efd中,监听读事件
+
+    } while(0); //只执行一次，这个方法很巧妙
+
+    printf("new connect [%s:%d][time:%ld], pos[%d]\n",
+            inet_ntoa(cin.sin_addr), ntohs(cin.sin_port), g_events[i].last_active, i);
+    return ;
+}
+
+void recvdata(int fd, int events, void *arg)
+{
+    struct myevent_s *ev = (struct myevent_s *)arg;
+    int len;
+
+    len = recv(fd, ev->buf, sizeof(ev->buf), 0);            //读文件描述符, 数据存入myevent_s成员buf中
+
+    eventdel(g_efd, ev);        //将该节点从红黑树上摘除
+
+    if (len > 0) {
+
+        ev->len = len;
+        ev->buf[len] = '\0';                                //手动添加字符串结束标记
+        printf("C[%d]:%s\n", fd, ev->buf);
+
+        eventset(ev, fd, senddata, ev);                     //设置该 fd 对应的回调函数为 senddata
+        eventadd(g_efd, EPOLLOUT, ev);                      //将fd加入红黑树g_efd中,监听其写事件
+
+    } else if (len == 0) {
+        close(ev->fd);
+        /* ev-g_events 地址相减得到偏移元素位置 */
+        printf("[fd=%d] pos[%ld], closed\n", fd, ev-g_events);
+    } else {
+        close(ev->fd);
+        printf("recv[fd=%d] error[%d]:%s\n", fd, errno, strerror(errno));
+    }
+
+    return;
+}
+
+void senddata(int fd, int events, void *arg)
+{
+    struct myevent_s *ev = (struct myevent_s *)arg;
+    int len;
+
+    len = send(fd, ev->buf, ev->len, 0);                    //直接将数据 回写给客户端。未作处理
+    /*
+    printf("fd=%d\tev->buf=%s\ttev->len=%d\n", fd, ev->buf, ev->len);
+    printf("send len = %d\n", len);
+    */
+
+    if (len > 0) {
+
+        printf("send[fd=%d], [%d]%s\n", fd, len, ev->buf);
+        eventdel(g_efd, ev);                                //从红黑树g_efd中移除
+        eventset(ev, fd, recvdata, ev);                     //将该fd的 回调函数改为 recvdata
+        eventadd(g_efd, EPOLLIN, ev);                       //从新添加到红黑树上， 设为监听读事件
+
+    } else {
+        close(ev->fd);                                      //关闭链接
+        eventdel(g_efd, ev);                                //从红黑树g_efd中移除
+        printf("send[fd=%d] error %s\n", fd, strerror(errno));
+    }
+
+    return ;
+}
+
+/*创建 socket, 初始化lfd */
+
+void initlistensocket(int efd, short port)
+{
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);                                  //创建套接字
+    fcntl(lfd, F_SETFL, O_NONBLOCK);                                            //将socket设为非阻塞
+
+    /* void eventset(struct myevent_s *ev, int fd, void (*call_back)(int, int, void *), void *arg);  */
+    //给lfd对应的myevent_s结构体的成员变量初始化
+    eventset(&g_events[MAX_EVENTS], lfd, acceptconn, &g_events[MAX_EVENTS]);	//将lfd添加到监听事件数组，&g_events传的是数组最后一个元素的地址，当有客户端连接就调用acceptconn函数来处理
+
+    /* void eventadd(int efd, int events, struct myevent_s *ev) */
+    eventadd(efd, EPOLLIN, &g_events[MAX_EVENTS]);                              //将lfd挂到树上
+    //将lfd和socket绑定
+    struct sockaddr_in sin;
+    memset(&sin, 0, sizeof(sin));                                               //bzero(&sin, sizeof(sin))
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = INADDR_ANY;
+    sin.sin_port = htons(port);
+
+    bind(lfd, (struct sockaddr *)&sin, sizeof(sin));
+
+    listen(lfd, 20);
+
+    return ;
+}
+
+int main(int argc, char *argv[])
+{
+    unsigned short port = SERV_PORT;                    //设置监听的端口
+
+    if (argc == 2)
+        port = atoi(argv[1]);                           //使用用户指定端口.如未指定,用默认端口
+
+    g_efd = epoll_create(MAX_EVENTS+1);                 //创建红黑树,返回给全局g_efd
+    if (g_efd <= 0)
+        printf("create efd in %s err %s\n", __func__, strerror(errno)); //__fun__:打印当前函数名
+
+    initlistensocket(g_efd, port);                      //初始化监听socket
+
+    struct epoll_event events[MAX_EVENTS+1];            //保存已经满足就绪事件的文件描述符数组，+1包括lfd
+        printf("server running:port[%d]\n", port);
+
+    int checkpos = 0, i;
+    while (1) {
+        /* 超时验证，每次测试100个链接，不测试listenfd，当客户端60秒内没有和服务器通信，则关闭此客户端链接 */
+
+        long now = time(NULL);                          //当前时间
+        for (i = 0; i < 100; i++, checkpos++) {         //一次循环检测100个。 使用checkpos控制检测对象
+            if (checkpos == MAX_EVENTS)
+                checkpos = 0;
+            if (g_events[checkpos].status != 1)         //不在红黑树 g_efd 上
+                continue;
+
+            long duration = now - g_events[checkpos].last_active;       //客户端不活跃的世间
+
+            if (duration >= 60) {
+                close(g_events[checkpos].fd);                           //关闭与该客户端链接
+                printf("[fd=%d] timeout\n", g_events[checkpos].fd);
+                eventdel(g_efd, &g_events[checkpos]);                   //将该客户端 从红黑树 g_efd移除
+            }
+        }//测试结束
+
+        /*监听红黑树g_efd, 将满足的事件的文件描述符加至events数组中,返回满足事件的个数，1秒没有事件满足, 返回 0*/
+        int nfd = epoll_wait(g_efd, events, MAX_EVENTS+1, 1000);        //每隔一秒让内核检测一次
+        if (nfd < 0) {
+            printf("epoll_wait error, exit\n");
+            break;
+        }
+
+        for (i = 0; i < nfd; i++) {         //遍历到每个监听的事件
+            /*使用自定义结构体myevent_s类型指针, 接收联合体data的void *ptr成员*/
+            struct myevent_s *ev = (struct myevent_s *)events[i].data.ptr;          //ev是对应的事件
+
+            if ((events[i].events & EPOLLIN) && (ev->events & EPOLLIN)) {           //读就绪事件
+                ev->call_back(ev->fd, events[i].events, ev->arg);                   //call_back函数指针，指向不确定，如果是连接请求，就指向acceptconn函数
+            }
+            if ((events[i].events & EPOLLOUT) && (ev->events & EPOLLOUT)) {         //写就绪事件
+                ev->call_back(ev->fd, events[i].events, ev->arg);
+            }
+        }
+    }	//while结束
+
+    /* 退出前释放所有资源 */
+    return 0;
+}
+```
+
+### 线程池并发服务器
+
+\1.       预先创建阻塞于accept多线程，使用互斥锁上锁保护accept
+
+\2.       预先创建多线程，由主线程调用accept
+
+```c
+#include <stdlib.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include <signal.h>
+#include <errno.h>
+#include "threadpool.h"
+
+#define DEFAULT_TIME 10                 /*10s检测一次*/
+#define MIN_WAIT_TASK_NUM 10            /*如果queue_size > MIN_WAIT_TASK_NUM 添加新的线程到线程池*/ 
+#define DEFAULT_THREAD_VARY 10          /*每次创建和销毁线程的个数*/
+#define true 1
+#define false 0
+
+typedef struct {
+    void *(*function)(void *);          /* 函数指针，回调函数 */
+    void *arg;                          /* 上面函数的参数 */
+} threadpool_task_t;                    /* 各子线程任务结构体 */
+
+/* 描述线程池相关信息 */
+struct threadpool_t {
+    pthread_mutex_t lock;               /* 用于锁住本结构体 */    
+    pthread_mutex_t thread_counter;     /* 记录忙状态线程个数de琐 -- busy_thr_num */
+    pthread_cond_t queue_not_full;      /* 当任务队列满时，添加任务的线程阻塞，等待此条件变量 */
+    pthread_cond_t queue_not_empty;     /* 任务队列里不为空时，通知等待任务的线程 */
+
+    pthread_t *threads;                 /* 存放线程池中每个线程的tid。数组 */
+    pthread_t adjust_tid;               /* 存管理线程tid */
+    threadpool_task_t *task_queue;      /* 任务队列 */
+
+    int min_thr_num;                    /* 线程池最小线程数 */
+    int max_thr_num;                    /* 线程池最大线程数 */
+    int live_thr_num;                   /* 当前存活线程个数 */
+    int busy_thr_num;                   /* 忙状态线程个数 */
+    int wait_exit_thr_num;              /* 要销毁的线程个数 */
+
+    int queue_front;                    /* task_queue队头下标 */
+    int queue_rear;                     /* task_queue队尾下标 */
+    int queue_size;                     /* task_queue队中实际任务数 */
+    int queue_max_size;                 /* task_queue队列可容纳任务数上限 */
+
+    int shutdown;                       /* 标志位，线程池使用状态，true或false */
+};
+
+/**
+ * @function void *threadpool_thread(void *threadpool)
+ * @desc the worker thread
+ * @param threadpool the pool which own the thread
+ */
+void *threadpool_thread(void *threadpool);
+
+/**
+ * @function void *adjust_thread(void *threadpool);
+ * @desc manager thread
+ * @param threadpool the threadpool
+ */
+void *adjust_thread(void *threadpool);
+
+/**
+ * check a thread is alive
+ */
+int is_thread_alive(pthread_t tid);
+int threadpool_free(threadpool_t *pool);
+
+threadpool_t *threadpool_create(int min_thr_num, int max_thr_num, int queue_max_size)
+{
+    int i;
+    threadpool_t *pool = NULL;
+    do {
+        if((pool = (threadpool_t *)malloc(sizeof(threadpool_t))) == NULL) {  
+            printf("malloc threadpool fail");
+            break;/*跳出do while*/
+        }
+
+        pool->min_thr_num = min_thr_num;
+        pool->max_thr_num = max_thr_num;
+        pool->busy_thr_num = 0;
+        pool->live_thr_num = min_thr_num;               /* 活着的线程数 初值=最小线程数 */
+        pool->queue_size = 0;                           /* 有0个产品 */
+        pool->queue_max_size = queue_max_size;
+        pool->queue_front = 0;
+        pool->queue_rear = 0;
+        pool->shutdown = false;                         /* 不关闭线程池 */
+
+        /* 根据最大线程上限数， 给工作线程数组开辟空间, 并清零 */
+        pool->threads = (pthread_t *)malloc(sizeof(pthread_t)*max_thr_num); 
+        if (pool->threads == NULL) {
+            printf("malloc threads fail");
+            break;
+        }
+        memset(pool->threads, 0, sizeof(pthread_t)*max_thr_num);
+
+        /* 队列开辟空间，各个子线程的任务结构体 */
+        pool->task_queue = (threadpool_task_t *)malloc(sizeof(threadpool_task_t)*queue_max_size);
+        if (pool->task_queue == NULL) {
+            printf("malloc task_queue fail");
+            break;
+        }
+
+        /* 初始化互斥琐、条件变量 */
+        if (pthread_mutex_init(&(pool->lock), NULL) != 0
+                || pthread_mutex_init(&(pool->thread_counter), NULL) != 0
+                || pthread_cond_init(&(pool->queue_not_empty), NULL) != 0
+                || pthread_cond_init(&(pool->queue_not_full), NULL) != 0)
+        {
+            printf("init the lock or cond fail");
+            break;
+        }
+
+        /* 启动 min_thr_num 个 work thread */
+        for (i = 0; i < min_thr_num; i++) {
+            pthread_create(&(pool->threads[i]), NULL, threadpool_thread, (void *)pool);/*pool指向当前线程池*/
+            printf("start thread 0x%x...\n", (unsigned int)pool->threads[i]);
+        }
+        pthread_create(&(pool->adjust_tid), NULL, adjust_thread, (void *)pool);/* 启动管理者线程 */
+
+        return pool;
+
+    } while (0);
+
+    threadpool_free(pool);      /* 前面代码调用失败时，释放poll存储空间 */
+
+    return NULL;
+}
+
+/* 向线程池中 添加一个任务 */
+int threadpool_add(threadpool_t *pool, void*(*function)(void *arg), void *arg)
+{
+    pthread_mutex_lock(&(pool->lock));
+
+    /* ==为真，队列已经满， 调wait阻塞 */
+    while ((pool->queue_size == pool->queue_max_size) && (!pool->shutdown)) {
+        pthread_cond_wait(&(pool->queue_not_full), &(pool->lock));
+    }
+    if (pool->shutdown) {
+        pthread_mutex_unlock(&(pool->lock));
+    }
+
+    /* 清空 工作线程 调用的回调函数 的参数arg */
+    if (pool->task_queue[pool->queue_rear].arg != NULL) {
+        free(pool->task_queue[pool->queue_rear].arg);
+        pool->task_queue[pool->queue_rear].arg = NULL;
+    }
+    /*添加任务到任务队列里*/
+    pool->task_queue[pool->queue_rear].function = function;
+    pool->task_queue[pool->queue_rear].arg = arg;
+    pool->queue_rear = (pool->queue_rear + 1) % pool->queue_max_size;       /* 队尾指针移动, 模拟环形 */
+    pool->queue_size++;
+
+    /*添加完任务后，队列不为空，唤醒线程池中 等待处理任务的线程*/
+    pthread_cond_signal(&(pool->queue_not_empty));
+    pthread_mutex_unlock(&(pool->lock));
+
+    return 0;
+}
+
+/* 线程池中各个工作线程 */
+void *threadpool_thread(void *threadpool)
+{
+    threadpool_t *pool = (threadpool_t *)threadpool;
+    threadpool_task_t task;
+
+    while (true) {
+        /* Lock must be taken to wait on conditional variable */
+        /*刚创建出线程，等待任务队列里有任务，否则阻塞等待任务队列里有任务后再唤醒接收任务*/
+        pthread_mutex_lock(&(pool->lock));
+
+        /*queue_size == 0 说明没有任务，调 wait 阻塞在条件变量上, 若有任务，跳过该while*/
+        while ((pool->queue_size == 0) && (!pool->shutdown)) {  
+            printf("thread 0x%x is waiting\n", (unsigned int)pthread_self());
+            pthread_cond_wait(&(pool->queue_not_empty), &(pool->lock));
+
+            /*清除指定数目的空闲线程，如果要结束的线程个数大于0，结束线程*/
+            if (pool->wait_exit_thr_num > 0) {
+                pool->wait_exit_thr_num--;
+
+                /*如果线程池里线程个数大于最小值时可以结束当前线程*/
+                if (pool->live_thr_num > pool->min_thr_num) {
+                    printf("thread 0x%x is exiting\n", (unsigned int)pthread_self());
+                    pool->live_thr_num--;
+                    pthread_mutex_unlock(&(pool->lock));
+                    pthread_exit(NULL);
+                }
+            }
+        }
+
+        /*如果指定了true，要关闭线程池里的每个线程，自行退出处理*/
+        if (pool->shutdown) {
+            pthread_mutex_unlock(&(pool->lock));
+            printf("thread 0x%x is exiting\n", (unsigned int)pthread_self());
+            pthread_exit(NULL);     /* 线程自行结束 */
+        }
+
+        /*从任务队列里获取任务, 是一个出队操作*/
+        task.function = pool->task_queue[pool->queue_front].function;
+        task.arg = pool->task_queue[pool->queue_front].arg;
+
+        pool->queue_front = (pool->queue_front + 1) % pool->queue_max_size;       /* 出队，模拟环形队列 */
+        pool->queue_size--;
+
+        /*通知可以有新的任务添加进来*/
+        pthread_cond_broadcast(&(pool->queue_not_full));
+
+        /*任务取出后，立即将 线程池琐 释放*/
+        pthread_mutex_unlock(&(pool->lock));
+
+        /*执行任务*/ 
+        printf("thread 0x%x start working\n", (unsigned int)pthread_self());
+        pthread_mutex_lock(&(pool->thread_counter));                            /*忙状态线程数变量琐*/
+        pool->busy_thr_num++;                                                   /*忙状态线程数+1*/
+        pthread_mutex_unlock(&(pool->thread_counter));
+        (*(task.function))(task.arg);                                           /*执行回调函数任务*/
+        //task.function(task.arg);                                              /*执行回调函数任务*/
+
+        /*任务结束处理*/ 
+        printf("thread 0x%x end working\n", (unsigned int)pthread_self());
+        pthread_mutex_lock(&(pool->thread_counter));
+        pool->busy_thr_num--;                                       /*处理掉一个任务，忙状态数线程数-1*/
+        pthread_mutex_unlock(&(pool->thread_counter));
+    }
+
+    pthread_exit(NULL);
+}
+
+/* 管理线程 */
+void *adjust_thread(void *threadpool)
+{
+    int i;
+    threadpool_t *pool = (threadpool_t *)threadpool;
+    while (!pool->shutdown) {
+
+        sleep(DEFAULT_TIME);                                    /*定时 对线程池管理*/
+
+        pthread_mutex_lock(&(pool->lock));
+        int queue_size = pool->queue_size;                      /* 关注 任务数 */
+        int live_thr_num = pool->live_thr_num;                  /* 存活 线程数 */
+        pthread_mutex_unlock(&(pool->lock));
+
+        pthread_mutex_lock(&(pool->thread_counter));
+        int busy_thr_num = pool->busy_thr_num;                  /* 忙着的线程数 */
+        pthread_mutex_unlock(&(pool->thread_counter));
+
+        /* 创建新线程 算法： 任务数大于最小线程池个数, 且存活的线程数少于最大线程个数时 如：30>=10 && 40<100*/
+        if (queue_size >= MIN_WAIT_TASK_NUM && live_thr_num < pool->max_thr_num) {
+            pthread_mutex_lock(&(pool->lock));  
+            int add = 0;
+
+            /*一次增加 DEFAULT_THREAD 个线程*/
+            for (i = 0; i < pool->max_thr_num && add < DEFAULT_THREAD_VARY
+                    && pool->live_thr_num < pool->max_thr_num; i++) {
+                if (pool->threads[i] == 0 || !is_thread_alive(pool->threads[i])) {
+                    pthread_create(&(pool->threads[i]), NULL, threadpool_thread, (void *)pool);
+                    add++;
+                    pool->live_thr_num++;
+                }
+            }
+
+            pthread_mutex_unlock(&(pool->lock));
+        }
+
+        /* 销毁多余的空闲线程 算法：忙线程X2 小于 存活的线程数 且 存活的线程数 大于 最小线程数时*/
+        if ((busy_thr_num * 2) < live_thr_num  &&  live_thr_num > pool->min_thr_num) {
+
+            /* 一次销毁DEFAULT_THREAD个线程, 隨機10個即可 */
+            pthread_mutex_lock(&(pool->lock));
+            pool->wait_exit_thr_num = DEFAULT_THREAD_VARY;      /* 要销毁的线程数 设置为10 */
+            pthread_mutex_unlock(&(pool->lock));
+
+            for (i = 0; i < DEFAULT_THREAD_VARY; i++) {
+                /* 通知处在空闲状态的线程, 他们会自行终止*/
+                pthread_cond_signal(&(pool->queue_not_empty));
+            }
+        }
+    }
+
+    return NULL;
+}
+
+int threadpool_destroy(threadpool_t *pool)
+{
+    int i;
+    if (pool == NULL) {
+        return -1;
+    }
+    pool->shutdown = true;
+
+    /*先销毁管理线程*/
+    pthread_join(pool->adjust_tid, NULL);
+
+    for (i = 0; i < pool->live_thr_num; i++) {
+        /*通知所有的空闲线程*/
+        pthread_cond_broadcast(&(pool->queue_not_empty));
+    }
+    for (i = 0; i < pool->live_thr_num; i++) {
+        pthread_join(pool->threads[i], NULL);
+    }
+    threadpool_free(pool);
+
+    return 0;
+}
+
+int threadpool_free(threadpool_t *pool)
+{
+    if (pool == NULL) {
+        return -1;
+    }
+
+    if (pool->task_queue) {
+        free(pool->task_queue);
+    }
+    if (pool->threads) {
+        free(pool->threads);
+        pthread_mutex_lock(&(pool->lock));
+        pthread_mutex_destroy(&(pool->lock));
+        pthread_mutex_lock(&(pool->thread_counter));
+        pthread_mutex_destroy(&(pool->thread_counter));
+        pthread_cond_destroy(&(pool->queue_not_empty));
+        pthread_cond_destroy(&(pool->queue_not_full));
+    }
+    free(pool);
+    pool = NULL;
+
+    return 0;
+}
+
+int threadpool_all_threadnum(threadpool_t *pool)
+{
+    int all_threadnum = -1;
+    pthread_mutex_lock(&(pool->lock));
+    all_threadnum = pool->live_thr_num;
+    pthread_mutex_unlock(&(pool->lock));
+    return all_threadnum;
+}
+
+int threadpool_busy_threadnum(threadpool_t *pool)
+{
+    int busy_threadnum = -1;
+    pthread_mutex_lock(&(pool->thread_counter));
+    busy_threadnum = pool->busy_thr_num;
+    pthread_mutex_unlock(&(pool->thread_counter));
+    return busy_threadnum;
+}
+
+int is_thread_alive(pthread_t tid)
+{
+    int kill_rc = pthread_kill(tid, 0);     //发0号信号，测试线程是否存活
+    if (kill_rc == ESRCH) {
+        return false;
+    }
+
+    return true;
+}
+
+/*测试*/ 
+
+#if 1
+/* 线程池中的线程，模拟处理业务 */
+void *process(void *arg)
+{
+    printf("thread 0x%x working on task %d\n ",(unsigned int)pthread_self(),*(int *)arg);
+    sleep(1);
+    printf("task %d is end\n",*(int *)arg);
+
+    return NULL;
+}
+int main(void)
+{
+    /*threadpool_t *threadpool_create(int min_thr_num, int max_thr_num, int queue_max_size);*/
+
+    threadpool_t *thp = threadpool_create(3,100,100);/*创建线程池，池里最小3个线程，最大100，队列最大100*/
+    printf("pool inited");
+
+    //int *num = (int *)malloc(sizeof(int)*20);
+    int num[20], i;
+    for (i = 0; i < 20; i++) {
+        num[i]=i;
+        printf("add task %d\n",i);
+        threadpool_add(thp, process, (void*)&num[i]);     /* 向线程池中添加任务 */
+    }
+    sleep(10);                                          /* 等子线程完成任务 */
+    threadpool_destroy(thp);
+
+    return 0;
+}
+
+#endif
+```
+
+
 
 # 附1.回射服务器程序
 
