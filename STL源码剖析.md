@@ -121,7 +121,8 @@
 
 不同的编译器**对C++语言的支持程度**不尽相同。作为一个希望具备广泛移植能力的程序库，SGI STL准备了一个**环境组态文件**[<stl_config.h>](tass-sgi-stl-2.91.57-source/stl_config.h)，其中定义了许多常量，标示某些组态的成立与否，所有STL头文件都会直接或间接包含这个组态文件，并以条件式写法，让预处理器根据各个常量决定取舍哪一段程序代码，例如：
 
-<div align="center"> <img src="../pic/stl-1-2.png"/> </div>
+![1569315597573](pic/1569315597573.png)
+
 **组态测试程序**：
 
 * [编译器对组态的支持](stlbookcode/c1/1config.cpp)
@@ -137,7 +138,8 @@
 
 ## 4.STL六大部件
 
-<div align="center"> <img src="../pic/stl-1-1.png"/> </div>
+![1569315609580](pic/1569315609580.png)
+
 最重要的2个是**容器**与**算法**
 
 * **容器**(container)
@@ -230,14 +232,16 @@ void allocator::destroy(pointer p)
 
 STL标准规定分配器定义于```<memory>```中，SGI```<memory>```内含两个文件，负责分离的2阶段操作
 
-<div align="center"> <img src="../pic/stl-2-1.png"/> </div>
+![1569315637389](pic/1569315637389.png)
+
 > 真正在SGI STL中大显身手的分配器（即SGI特殊的空间分配器std::alloc）或为第一级分配器，或为第二级分配器
 
 ### 3.1 对象构造与析构
 
 [<stl_construct.h>](tass-sgi-stl-2.91.57-source/stl_construct.h)
 
-<div align="center"> <img src="../pic/stl-2-2.png"/> </div>
+![1569315650295](pic/1569315650295.png)
+
 > STL规定分配器必须拥有名为construct()和destroy()的两个成员函数，然而SGI特殊的空间分配器std::alloc并未遵守这一规则，所以实际上这部分属于STL allocator，但不属于std::alloc。换句话说，SGI特殊的空间分配器std::alloc不包含”3.1 对象构造与析构“，只包含”3.2 内存分配与释放“
 
 ### 3.2 内存分配与释放
@@ -255,7 +259,8 @@ SGI对内存分配与释放的设计哲学如下：
 
 考虑到小型区块所可能造成的内存碎片问题，SGI设计了双层级分配器：
 
-<div align="center"> <img src="../pic/stl-2-3.png"/> </div>
+![1569315664156](pic/1569315664156.png)
+
 * 第一级分配器
     - 直接使用malloc()和free()
 * 第二级分配器
@@ -282,7 +287,8 @@ public:
 
 内部4个函数都是转调用分配器的成员函数。**这个接口使分配器的分配单位从bytes转为个别元素的大小**
 
-<div align="center"> <img src="../pic/stl-2-4.png"/> </div>
+![1569315675803](pic/1569315675803.png)
+
 > 上图中Alloc=alloc中的缺省alloc可以是第一级分配器，也可以是第二级分配器。SGI STL已经把它设为第二级分配器
 
 两级分配器都定义在头文件[<stl_alloc.h>](tass-sgi-stl-2.91.57-source/stl_alloc.h)中
@@ -389,7 +395,8 @@ void * __malloc_alloc_template<inst>::oom_realloc(void *p, size_t n)
 * 产生内存碎片
 * 额外负担。额外负担是一些区块信息，用以管理内存。区块越小，额外负担所占的比例就越大，越显浪费
 
-<div align="center"> <img src="../pic/stl-2-5.png"/> </div>
+![1569315689122](pic/1569315689122.png)
+
 * 当区块大于128bytes时，视为大区块
     - 转交第一级分配器处理
 * 当区块小于128bytes时，视为小额区块
@@ -408,7 +415,8 @@ union obj{
 
 下图是free-list的实现技巧：
 
-<div align="center"> <img src="../pic/stl-2-6.png"/> </div>
+![1569315698073](pic/1569315698073.png)
+
 第二级分配器__default_alloc_template也定义在头文件[<stl_alloc.h>](tass-sgi-stl-2.91.57-source/stl_alloc.h)中，以下为部分实现：
 
 ```c++
@@ -483,12 +491,15 @@ __default_alloc_template<threads, inst> ::free_list[__NFREELISTS] =
         + 若free-list之内有可用的区块，则直接使用
         + 若free-list之内没有可用区块，将区块大小调至8倍数边界，调用refill()，准备为free-list重新填充空间
 
-<div align="center"> <img src="../pic/stl-2-7.png"/> </div>
+![1569315712218](pic/1569315712218.png)
+
  * 空间释放函数[deallocate()](tass-sgi-stl-2.91.57-source/stl_alloc.h#L433)
      - 若区块大于128bytes，就调用第一级分配器
      - 若区块小于128bytes，找出对应的free-list，将区块回收
      
-<div align="center"> <img src="../pic/stl-2-8.png"/> </div>
+
+![1569315723876](pic/1569315723876.png)
+
 * 重新填充free-list的函数[refill()](tass-sgi-stl-2.91.57-source/stl_alloc.h#L537)
   
 - 若free-list中没有可用区块时，会调用chunk_alloc**从内存池**中申请空间重新填充free-list。缺省申请20个新节点(新区块)，如果内存池空间不足，获得的节点数可能小于20
@@ -503,8 +514,9 @@ __default_alloc_template<threads, inst> ::free_list[__NFREELISTS] =
         + 如果malloc()获取失败，chunk_alloc()就四处寻找有无”尚有未用且区块足够大“的free-list。找到了就挖出一块交出
         + 如果上一步仍未成功，那么就调用第一级分配器，第一级分配器有out-of-memory处理机制，或许有机会释放其它的内存拿来此处使用。如果可以，就成功，否则抛出bad_alloc异常
     
-    <div align="center"> <img src="../pic/stl-2-9.png"/> </div>
-上图中，一开始就调用chunk_alloc(32,20)，于是malloc()分配40个32bytes区块，其中第1个交出，另19个交给free-list[3]维护，余20个留给内存池；接下来客户调用chunk_alloc(64,20)，此时free_list[7]空空如也，必须向内存池申请。内存池只能供应(32\*20)/64=10个64bytes区块，就把这10个区块返回，第1个交给客户，余9个由free_list[7]维护。此时内存池全空。接下来再调用chunk_alloc(96,20)，此时free-list[11]空空如也，必须向内存池申请。而内存池此时也为空，于是以malloc()分配40+n(附加量)个96bytes区块，其中第1个交出，另19个交给free-list[11]维护，余20+n(附加量)个区块留给内存池...
+    ![1569315736754](pic/1569315736754.png)
+
+    上图中，一开始就调用chunk_alloc(32,20)，于是malloc()分配40个32bytes区块，其中第1个交出，另19个交给free-list[3]维护，余20个留给内存池；接下来客户调用chunk_alloc(64,20)，此时free_list[7]空空如也，必须向内存池申请。内存池只能供应(32\*20)/64=10个64bytes区块，就把这10个区块返回，第1个交给客户，余9个由free_list[7]维护。此时内存池全空。接下来再调用chunk_alloc(96,20)，此时free-list[11]空空如也，必须向内存池申请。而内存池此时也为空，于是以malloc()分配40+n(附加量)个96bytes区块，其中第1个交出，另19个交给free-list[11]维护，余20+n(附加量)个区块留给内存池...
 
 ### 3.3 内存基本处理工具
 
@@ -523,7 +535,8 @@ STL定义了5个全局函数，作用于未初始化空间上，有助于容器�
 1. 分配内存区块，足以包含范围内的所有元素
 2. 调用上述3个函数在全区间范围内构造对象（因此，这3个函数使我们能够将内存的分配与对象的构造行为分离；并且3个函数都具有”commit or rollback“语意，要么所有对象都构造成功，要么一个都没有构造）
 
-<div align="center"> <img src="../pic/stl-2-10.png"/> </div>
+![1569315763549](pic/1569315763549.png)
+
 <br>
 
 # 三.迭代器与traits编程技法
