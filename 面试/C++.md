@@ -1,4 +1,4 @@
-一、变量
+# 一、变量
 
 ## 1.全局变量和static变量
 
@@ -2085,3 +2085,385 @@ SGI对内存分配与释放的设计哲学如下：
 - **第二级分配器**：（为什么要二级分配器？内存池与16个free-list？空间分配和释放的步骤？）
   - 当分配区块超过128bytes时，视为“足够大”，调用第一级分配器
   - 当分配区块小于128bytes时，视为“过小”，为了降低额外负担，采用复杂的memory pool整理方式，不再求助于第一级分配器
+
+# 六、对象内存模型
+
+## 1.数据成员
+
+### 1.成员变量在类对象中的布局规则
+
+> access section：private、public、protected等区段
+
+- **同一access section中的Nonstatic data members在class object中的排列顺序将和其被声明的顺序一样**
+  - **C++标准要求，同一access section中，members的排列只需符合==“较晚出现的members在class object中有较高的地址”==即可，各个members并不一定得连续排列：**
+    - **对齐可能会填充一些字节**
+    - **编译器可能会合成一些内部使用的data members**，如vptr（vptr传统上被放在所有显式声明的members的最后，如今有一些编译器把vptr放在一个class object的最前端。C++标准允许这些内部产生出来的members自由地放在任何位置上，甚至放在那些被程序员声明出来的members之间）
+- **C++标准允许多个access sections之中的data memebers自由排列，不必在乎它们出现在class声明中的顺序**
+
+### 2.通过指针和通过'.'进行Data Member存取的区别
+
+考虑下列代码：
+
+```c++
+Point3d origin,*pt = &origin;
+
+origin.x = 0.0;
+pt->x = 0.0;
+```
+
+通过origin存取和通过pt存取有什么差异？**对x是静态数据成员与不是静态成员时进行分析**
+
+- **Static Data Members**：这是C++中“通过一个指针和通过一个对象来存取member，结论完全相同”的唯一一种情况。这是因为“经由'.'对一个static data member进行存取操作”只是文法上的一种便宜行事。member其实并不在class object之中，因此存取static member并不需要通过class object（如果有两个类，每一个都声明了一个同名的static member，那么当它们都被放在程序的data segment时，就会导致命名冲突。编译器的解决方法是暗中对每一个static member编码，以获得一个独一无二的程序识别代码）
+- **Nonstatic Data Members**：欲对一个nonstatic data member进行存取操作，编译器需要把class object的起始位置加上data member的偏移位置。**每一个nonstatic data member的偏移位置在编译时期即可获知**，甚至如果member属于一个“基类子对象”也是一样，因此，存取一个nonstatic data member的效率和存取一个C struct member或一个非派生类的member是一样的。**但是，虚继承将为“经由基类子对象存取class members”导入一层新的间接性，如果通过指针存取，这个存取操作必须延迟至执行期，经由一个额外的间接引导才能解决**（原因在于，在继承体系中，”虚基类子对象“在不同派生类中的偏移量不同，指针所指的对象类型需要在运行时确定，因此只能在运行时得到”虚基类子对象“确切的偏移量）
+
+假设，x是一个Nonstatic Data Members，那么地址 `&origin.x` 将等于：
+
+```c++
+//关于指向Data Members的指针以及为什么要减1，见3.5
+&origin + (&Point3d::x - 1);
+```
+
+### 3.数据成员的布局
+
+- #### 无继承
+
+  ![1569403306502](pic/1569403306502.png)
+
+- #### 不含多态的继承
+
+  （C++标准并未强制指定派生类和基类成员的排列顺序；理论上编译器可以自由安排。在大部分编译器上，基类成员总是先出现，虚基类除外）
+
+  ![1569403374797](pic/1569403374797.png)
+
+将两个原本独立不相干的类凑成一对“类型/子类型”，并带有继承关系，需要注意两点
+
+1. 可能会重复设计一些相同操作的函数
+2. 把一个类分成两层或更多层，出现在派生类中的基类子对象具有完整原样性，因此可能会导致对象空间膨胀
+
+- #### 含多态的继承
+
+（vptr的位置也没有强制规定，放在不同位置分别有什么好处？）
+
+尾端：允许C程序代码中也能使用，不用刻意去调整地址，效率最高，是自然多态形式。![1569762522632](pic/1569762522632.png)
+
+首端：丧失了C语言的兼容性，offset在执行期备妥。
+
+- #### 多重继承
+
+（基类子对象的排列顺序也没有硬性规定；指针的调整方式？）
+
+布局如下：
+
+![1569762925822](pic/1569762925822.png)
+
+- **如果将一个Vertex3d类的对象的地址指定给Vertex类的指针，那么需要编译器介入，执行相应的地址转换**
+- **如果指定给Point2d或Point3d类的指针，则不要编译器介入**
+
+```c++
+Vertex3d v3d;
+Vertex *pv;
+Point2d *p2d;
+Point3d *p2d;
+```
+
+那么 `pv = &v3d;` 需要类似这样的转换：
+
+```c++
+pv = (Vertex*)(((char*)&v3d) + sizeof(Point3d));
+```
+
+而 `p2d = &v3d;` 或 `p3d = &v3d;` 只需要简单地拷贝其地址就好
+
+作为补充，必须提及下面一种情况：
+
+```c++
+Vertex3d *pv3d;
+//一系列操作，使得pv3d可能指向NULL或者一个Vertex3d对象
+Vertex *pv;
+```
+
+此时 `pv = pv3d;` 不能只是简单的被转换，因为如果pv3d为0，pv将获得sizeof(Point3d)的值。这明显是错误的，因此需要增加一个条件测试：
+
+```c++
+pv = pv3d ? (Vertex*)(((char*)pv3d) + sizeof(Point3d)) : 0;
+```
+
+- #### 虚继承
+
+（虚基类子对象的偏移信息记录在虚函数表之前与使用一个额外指针来记录的对比？）
+
+要在编译器中实现多继承，实在是难度颇高。以iostream继承体系为例，实现技术的挑战在于，要找到一个足够有效的方法，将istream和ostream各自维护的一个ios子对象，折叠成为一个由iostream维护的单一ios子对象，并且还可以保持基类和派生类的指针之间的多态指定操作
+
+**一般的实现方法是，如果一个类内含有一个或多个虚基类子对象，将被分割为2部分：一个不变区域和一个共享区域**
+
+- **不变区域**：不管后接如何衍化，总是拥有固定的offset(从object的开头算起)，所以这一部分数据可以被直接存取
+- **共享区域**：所表现的就是“虚基类子对象”，这一部分的数据的位置会因为每次的派生操作而有变化，所以它们只可以被间接存取（**各家编译器实现技术之间的差异就在于间接存取的方法不同**）
+
+**一般的布局策略是先安排好派生类的不变部分，然后再建立其共享部分**（对于共享部分的存取，cfront编译器会在每一个派生类对象中安插一些指针，每个指针指向一个虚基类。要存取继承得来的虚基类成员。可以通过相关指针间接完成）
+
+![1569763552655](pic/1569763552655.png)
+
+这样的实现模型有两个主要的缺点：
+
+1. 每一个对象必须针对其每一个virtual base class背负一个额外的指针（然而理想上我们希望class object有固定的负担，不因为其virtual base class的个数而有所变化）
+   - 1）Microsoft编译器引入所谓的vitual base class table。每一个class object如果有一个或多个virtual base classes，就会由编译器安插一个指针，指向virtual base class table。至于真正的virtual base class指针，当然是放在该表格中
+   - 2）在virtual function table中放置virtual base class的offset(而不是地址)，将virtual base class offset和virtual function entries混杂在一起（**下图展示了这种模型**）
+2. 由于虚拟继承串链的加长，导致间接存取层次的增加（意思是，如果有3层虚拟派生，就需要经由3个virtual base class指针进行3次间接存取。然而理想上却希望固定的存取时间，不因为虚拟派生的深度而改变）
+   - MetaWare和其它编译器仍然使用cfront的原始实现模型来解决这个问题，他们经由拷贝操作取得所有的nested virtual base class指针，放到派生类object之中。从而解决了“固定存取时间”的问题，虽然付出了一些空间上的代价
+
+![1569763573081](pic/1569763573081.png)
+
+> 一般而言，virtual base class最有效的一种运用形式就是：一个抽象的virtual base class，没有任何data members
+
+### 4.指向类数据成员的指针
+
+```c++
+class Point3d{
+ public:
+    virtual void print() {}
+    float x,y,z;
+};
+
+int main(){
+    //Point3d::*的意思是：“指向Point3d data member”的指针类型
+    float Point3d::*p1 = &Point3d::x;
+    float Point3d::*p2 = &Point3d::y;
+    float Point3d::*p3 = &Point3d::z;
+    //不可以用cout
+    printf("&Point3d::x = %p\n" , p1);   //0x8，根据机器和编译器决定
+    printf("&Point3d::y = %p\n" , p2);   //0xc，根据机器和编译器决定
+    printf("&Point3d::z = %p\n" , p3);   //0x10，根据机器和编译器决定
+    
+    Point3d p;
+    p.x = 1.1;
+    p.y = 2.2;
+    p.z = 3.3;
+    //x:1.1 y:2.2 z:3.3
+    cout << "x:" << p.*p1 << " y:" << p.*p2 << " z:" << p.*p3 << endl;
+    
+    return 0;
+}
+```
+
+**&Point3d::z**将得到z坐标在class object中的**偏移位置**。最低限度其值将是x和y的大小总和，因为C++要求同一access section中的members的排列顺序应该和其声明顺序相同
+
+如果vptr放在对象的尾端，三个坐标值在对象的布局中的偏移量分别是0，4，8。如果vptr放在对象的头部，三个坐标值在对象的布局中的offset分别是8，12，16（64位机器）。然后**结果可能会加1，即1，5，9或者9，13，17。这是为了区分一个“没有指向任何data member”的指针，和一个指向“第一个data member”的指针（对象的内存分布并没有增加1，这里只是编译器可能对指针的处理）**：
+
+```c++
+float Point3d::*p1 = 0;
+float Point3d::*p2 = &Point3d::x;
+```
+
+为了区分p1和p2，每一个真正的member offset的值都被加上1（如我测的结果所示，**如果没有增加1，可能是编译器做了特殊处理**）。因此，无论编译器或使用者都必须记住，在真正使用该值以指出一个member之前请减掉1
+
+## 2.函数成员
+
+### 1.nonstatic成员函数的转换
+
+（目的是为了提供和一般非成员函数相同的效率）
+
+C++的设计准则之一就是：nonstatic member function至少必须和一般的nonmember function有相同的效率。**因此编译器内部会将”member函数实例“转换为对等的”nonmember函数实例“**
+
+member function按照下列步骤转化为nonmember function：
+
+1. 改写函数原型，安插一个额外的参数到member function中，提供一个存取管道，使class object得以将此函数调用。额外参数被称为this指针：
+
+```c++
+Point3d Point3d::magnitude(Point3d *const this)
+//如果member function是const，则变成
+Point3d Point3d::magnitude(const Point3d *const this)
+```
+
+1. 将每一个”对nonstatic data member的存取操作“改为经由this指针来存取：
+
+```c++
+{
+    return sqrt(
+        this->_x * this->_x +
+        this->_y * this->_y +
+        this->_z * this->_z );
+}
+```
+
+1. 将member function重新写成一个外部函数。将函数名称经过”mangling“处理，使其在程序中成为独一无二的语汇：
+
+```c++
+extern magnitude__7Point3dFv(register Point3d *const this);
+```
+
+函数转换好之后，每一个调用操作也会进行转换：
+
+```c++
+//obj.magnitude();
+magnitude__7Point3dFv(&obj);
+
+//ptr->magnitude();
+magnitude__7Point3dFv(ptr);
+```
+
+#### 名称的特殊处理
+
+一般而言，member的名称前会被加上class名称，形成独一无二的命名：
+
+```c++
+class Bar {public: int ival; ...};
+//ival有可能变成：ival__3Bar
+
+class Foo:public Bar {public: int ival; ...};
+//可能会变成这样：
+class Foo{
+public:
+    int ival__3Bar;
+    int ival_3Foo;
+}
+```
+
+#### 成员函数重载的处理
+
+为了支持重载，“mangling”处理肯定不能只使用函数名和类名
+
+```c++
+class Point {
+public:
+    void x(float newX);
+    float x();
+    ...
+};
+
+//Point中重载的x函数，可能会变成这样：
+class Point{
+public:
+    void x__5PointFf(float newX);
+    float x__5PointFv();
+}
+```
+
+### 2.static成员函数的转换
+
+static member function也会被转换成一般的nonmember function，但是不同于普通的member function，static member function没有this指针，因此差不多等同于nonmember function。每一个调用操作会进行类似如下转换：
+
+```c++
+//obj.normalize();
+normalize__7Point3dSFv();
+//ptr->normalize();
+normalize__7Point3dSFv();
+```
+
+假设Point3d类存在一个名为object_count的static member function：
+
+```c++
+unsigned int Point3d::object_count()
+{
+    return _object_count;
+}
+
+//会被cfront转化为：
+unsigned int object_count__5Point3dSFv()
+{
+    return _object_count__5Point3d;
+}
+```
+
+SFv表示它是一个static member function，拥有一个void参数链表
+
+如果取一个static member function的地址，获得的将是其在内存中的位置，也就是其地址。由于static member function没有this指针，所以其地址的类型并不是一个“指向class member function的指针”，而是一个"nonmember函数指针"：
+
+```c++
+&Point3d::object_count();
+//会得到一个数值，类型是：
+unsigned int(*)();
+//而不是
+unsigned int (Point3d::*)();
+```
+
+# 七、关键字
+
+## 1.extern
+
+（extern "C"?、与static？、有什么问题？、extern的时候定义变量？）
+
+修饰可以用来使用其他文件的变量或者函数。在C＋＋中调用C库函数，就需要在C＋＋程序中用`extern “C”`声明要引用的函数。
+
+## 2.const
+
+（修饰变量、修饰指针与引用、修饰成员函数 《Effective C++:条款3》）
+
+## 3.mutable
+
+mutalbe的中文意思是“可变的，易变的”，跟constant（既C++中的const）是反义词。在C++中，mutable也是为了突破const的限制而设置的。被mutable修饰的变量(mutable只能由于修饰类的非静态数据成员)，将永远处于可变的状态，即使在一个const函数中。
+
+## 4.static
+
+（修饰变量、类中使用）
+
+## 5.define与const、enum、inline？
+
+（《Effective C++:条款2》、C中默认const是外部连接的，而C++中默认const是内部连接的）
+
+对于单纯常量，最好以const对象或enum替换#define。
+
+对于形似函数的宏，最好改用inline函数替换#define。
+
+C中默认const是外部链接的,而C++中默认const是内部连接的。
+
+## 6.explicit
+
+（抑制隐式转换、可通过显示转换或直接初始化解决、类外定义时不应重复出现）
+
+当类构造函数的参数只有一个的时候,或者所有参数都有默认值的情况下,类A的对象时可以直接被对应的内置类型隐式转换后去赋值的,这样会造成错误
+
+## 7.noexcept
+
+（承诺不会抛出异常）
+
+## 8.default、delete
+
+（显示要求编译器合成、不能被调用）
+
+## 9.using
+
+（用于命名空间？、用于类中？）
+
+## 10.final
+
+（修饰类？、修饰成员函数？只有虚函数能使用final）
+
+## 11.auto、decltype
+
+(初始值为引用时类型为所引对象的类型、必须初始化、不能用于函数及模板)
+
+## 12.volatile
+
+（对象的值可能在程序的控制外被改变时，应将变量申明为volatile，告诉编译器不应对这样的对象进行优化，如果优化，从内存读取后CPU会优先访问数据在寄存器中的结果，但是内存中的数据可能在程序之外被改变、可以既是const又是volatile，const只是告诉程序不能试图去修改它.volatile是告诉编译器不要优化，因为变量可能在程序外部被改变）
+
+## 13.union
+
+# 八、其他
+
+## 1.调试程序的方法?
+
+gdb的调试方法：
+
+## 2.遇到coredump要怎么调试？
+
+## 3.模板的用法与适用场景
+
+## 4.用过C++11？新特性？
+
+（auto,decltype、explicit、lambda、final）
+
+## 5.函数调用的压栈过程
+
+## 6.sizeof和strlen的区别？
+
+（运算符与函数、计算的对象、编译时运行时）
+
+## 7.gcc和g++的区别？
+
+（gcc代表GUN Compiler Collection，是一堆编译器的集合，包括g++）
+
+## 8.运行时类型识别实现对象比较函数
+
+## 9.使用C++实现线程安全的单例模式
+
+## 10.什么是异常安全？

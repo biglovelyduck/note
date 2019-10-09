@@ -469,7 +469,7 @@ msg_iovec成员是iovec结构体类型的指针，iovec结构体的定义如下�
 
 ## 11.socket选项
 
-如果说fcntl系统调用是用来控制文件描述符属性的通用方法，那么下面俩系统调用是用来专门读取和设置scoket文件描述符属性的方法：
+如果说fcntl系统调用是用来控制文件描述符属性的通用方法，那么下面俩系统调用是用来专门读取和设置socket文件描述符属性的方法：
 
 ![1568769532864](pic/1568769532864.png)
 
@@ -1340,3 +1340,1941 @@ socket在创建的时候默认是阻塞的，通过第二个参数SOCK_NONBLOCK�
 
 ![1569308945594](pic/1569308945594.png)
 
+对于服务器来说既要求较好的实时性又要求同时处理多个用户请求的应用程序，我们要同时使用同步线程和异步线程，即采用半同步/半异步模式来实现。同步线程用来处理用户逻辑，异步线程用来处理I/O事件。
+
+![1569374490022](pic/1569374490022.png)
+
+如果结合考虑两种事件处理模式和几种I/O模型，则半同步/半异步模式就存在多种变体，其中一种变体就是半同步/半反应堆模式，如图：
+
+![1569374742293](pic/1569374742293.png)
+
+该图表示异步线程只有一个由主线程来充当，负责监听所有socket上的事件。
+
+**半同步/半反应堆模式存在如下缺点：**
+
+- 主线程和工作线程共享请求队列。主线程往请求队列添加任务或者工作线程从请求队列取出任务都需要对请求队列加锁保护，从而白白浪费cpu时间。
+- 每个工作线程在同一时间只能处理一个客户请求。如果客户数量较多，而工作线程较少，则请求队列会堆积很多任务，客户端相应速度会越来越慢，如果通过增加工作线程来解决，则工作线程切换也会耗费大量cpu时间。
+
+**一种相对高效的半同步/半异步模式：**它的每个工作线程可以同时处理多个客户连接
+
+![1569376605971](pic/1569376605971.png)
+
+该图描述主线程只负责监听socket，主线程向工作线程派发socket的最简单的方式是往它和工作线程之间的管道里写数据，工作线程检测到管道有数据可读，就分析是否是一个新的客户连接请求到来，如果是，就把新socket上的读写事件注册到自己的epoll内核事件表中。
+
+### 2.领导者/追随者模式
+
+指多个工作线程轮流获得事件源集合，轮流监听、分发并处理事件的一种模式。在任意时间点，程序都仅有一个领导者线程，它负责监听I/O事件，而其他线程都是追随者，他们休眠在线程池中等待成为新的领导者。
+
+当前的领导者如果检测到I/O事件，首先从线程池中推选出新的领导者线程，然后自己再处理I/O事件。此时新的领导者继续等待新的I/O事件，而原来的领导者则处理I/O事件，实现了并发。
+
+该模式包含如下组件：句柄集（HandleSet）、线程集（ThradSet）、事件处理器（EvenHandler）和具体的事件处理器（ConcreteEventHandler），关系如下：
+
+![1569377953557](pic/1569377953557.png)
+
+#### 1.句柄集
+
+句柄用于便是IO资源，在Linux下通常是一个文件描述符，句柄集就是众多句柄，它使用wait_for_event方法来监听这些句柄上的IO事件，并将其中的就绪事件通知给领导者线程，领导者则调用绑定到Handle上的事件处理器来处理事件。领导者将Handle和事件处理器绑定是通过调用句柄几种的register_handle方法实现的。
+
+#### 2.线程集
+
+这个组件是所有工作线程的管理者。它负责各个线程的同步以及新领导者线程的推选，线程集中的线程在任一时间必处于如下三种状态之一：
+
+- **Leader**：当前线程处于领导者身份，负责等待句柄集中上的IO事件
+- **Processing**：线程正在处理事件，领导者检测到IO事件后可以转移到该状态来处理该事件，并调用promote_new_leader方法推选新的领导者：也可以指定其他追随者来处理事件。当处于该状态的线程处理完事件后，如果当前线程集中没有领导者，则它将成为新的领导者，否则直接变为追随者。
+- **Follower：**线程当前处于追随者身份，通过调用线程集的join方法成为新的领导者，也可能被当前的领导者来指定处理新的任务。
+
+![1569383357621](pic/1569383357621.png)
+
+领导者推选新的领导者和追随者等待成为新的领导者这两个操作都会修改线程集，因此线程集提供一个成员Synchronizer来同步这俩操作，避免竞态。
+
+#### 3.事件处理器和具体的事件处理器
+
+事件处理器通常包含一个或多个回调函数handle_event。这些回调函数用于处理事件对应的业务逻辑。事件处理器使用前需要被绑定到某个句柄上，句柄事件发生就会调用回调函数，具体的事件处理器是事件处理器的派生类，他们必须重新实现基类的handle_event方法以处理特定的任务。
+
+![1569383816568](pic/1569383816568.png)
+
+## 6.有限状态机
+
+这一节是介绍逻辑单元内部的一种高效编程方法：有限状态机
+
+根据应用层协议头部包含的数据包类型来映射为逻辑单元的一种执行状态，服务器根据它来编写相应的处理逻辑：
+
+**有限状态机应用的一个实例：HTTP请求的读取和分析**。我们判断HTTP头部结束的依据是遇到一个空行，该空行仅包含一堆回车换行符(<CR><LF>)。如果一次读操作没有读入HTTP请求的整个头部，即没有遇到空行，那么我们就必须等待客户继续写数据并再次读入，因此，我们每完成一次读操作就要分析新读入的数据是否有空行。
+
+**实例**：HTTP请求的读取和分析，空行前面是请求行和头部域
+
+```c
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+
+/*读缓冲区大小*/
+#define BUFFER_SIZE 4096
+/*主状态机的三种可能：当前正在分析请求行，正在分析头部字段，分析内容*/
+enum CHECK_STATE { CHECK_STATE_REQUESTLINE = 0, CHECK_STATE_HEADER, CHECK_STATE_CONTENT };
+/*从状态机的三种可能状态，分别表示读到一个完整的行，行出错和行数据不完整*/
+enum LINE_STATUS { LINE_OK = 0, LINE_BAD, LINE_OPEN };
+/*服务器处理HTTP请求的结果：NO_REQUESE表示请求不完整，需要继续读取客户数据,
+GET_REQUEST:表示获得了一个完整的客户请求，BAD_REQUEST:表示客户请求有语法错误,
+FORBIDDEN_REQUEST:表示客户对资源没有足够的访问权限，INTERNAL_ERROR:表示服务器内部错误,
+CLOSED_CONNECTION:表示客户端已经关闭连接*/
+enum HTTP_CODE { NO_REQUEST, GET_REQUEST, BAD_REQUEST, FORBIDDEN_REQUEST, INTERNAL_ERROR, CLOSED_CONNECTION };
+/*为了简化问题，我们没有给客户端发送一个完整的HTTP应答报文，只是根据服务器的处理结果发送成功或失败信息*/
+static const char* szret[] = { "I get a correct result\n", "Something wrong\n" };
+
+/*从状态机，用于解析一行内容*/
+LINE_STATUS parse_line( char* buffer, int& checked_index, int& read_index )
+{
+    char temp;
+	/*check_index指向buffer应用程序缓冲区中当前正在分析的字节，
+	read_idex指向buffer中客户数据的尾部的下一字节，buffer中0~checked_index的字节都已经分析完毕，
+	第checked_index~(read_index-1)字节由下面的程序挨个分析*/
+    for ( ; checked_index < read_index; ++checked_index )
+    {
+        temp = buffer[ checked_index ];						//当前要分析的字节
+        if ( temp == '\r' )									//回车符说明可能读取到一个完整的行，说明可能读到一个完整的行
+        {
+			/*如果"\r"字符碰巧是buffer中的最后一个被读入的客户数据，那么这次分析没有读取到一个完整的行，返回LINE_OPEN
+			以表示还需要继续读取客户数据才能进一步分析*/
+            if ( ( checked_index + 1 ) == read_index )
+            {
+                return LINE_OPEN;
+            }
+			/*如果下一个字符是"\n*，则说明我们成功读取到一个完整的行*/
+            else if ( buffer[ checked_index + 1 ] == '\n' )
+            {
+                buffer[ checked_index++ ] = '\0';
+                buffer[ checked_index++ ] = '\0';
+                return LINE_OK;
+            }
+			//否则说明客户发送的HTTP请求存在语法问题
+            return LINE_BAD;
+        }
+		/*如果当前字符是换行符也说明可能读取到一个完整的行*/
+        else if( temp == '\n' )
+        {
+            if( ( checked_index > 1 ) &&  buffer[ checked_index - 1 ] == '\r' )
+            {
+                buffer[ checked_index-1 ] = '\0';
+                buffer[ checked_index++ ] = '\0';
+                return LINE_OK;
+            }
+            return LINE_BAD;
+        }
+    }
+	/*如果所有内容分析完毕也没有遇到"\r"字符则返回表示还需要继续读取客户数据才能进一步分析*/
+    return LINE_OPEN;
+}
+
+//分析请求行
+HTTP_CODE parse_requestline( char* szTemp, CHECK_STATE& checkstate )
+{
+	/*如果请求行中没有空白字符或"\t"字符，则HTTP请求毕有问题*/
+    char* szURL = strpbrk( szTemp, " \t" );
+    if ( ! szURL )
+    {
+        return BAD_REQUEST;
+    }
+    *szURL++ = '\0';
+
+    char* szMethod = szTemp;
+    if ( strcasecmp( szMethod, "GET" ) == 0 )				//仅支持GET方法
+    {
+        printf( "The request method is GET\n" );
+    }
+    else
+    {
+        return BAD_REQUEST;
+    }
+
+    szURL += strspn( szURL, " \t" );
+    char* szVersion = strpbrk( szURL, " \t" );
+    if ( ! szVersion )
+    {
+        return BAD_REQUEST;
+    }
+    *szVersion++ = '\0';
+    szVersion += strspn( szVersion, " \t" );
+    if ( strcasecmp( szVersion, "HTTP/1.1" ) != 0 )			//仅支持HTTP/1.1
+    {
+        return BAD_REQUEST;
+    }
+
+    if ( strncasecmp( szURL, "http://", 7 ) == 0 )			//检查URL是否合法
+    {
+        szURL += 7;
+        szURL = strchr( szURL, '/' );
+    }
+
+    if ( ! szURL || szURL[ 0 ] != '/' )
+    {
+        return BAD_REQUEST;
+    }
+
+    //URLDecode( szURL );
+    printf( "The request URL is: %s\n", szURL );
+    checkstate = CHECK_STATE_HEADER;						//HTTP请求行处理完毕，状态转移到头部字段的分析
+    return NO_REQUEST;
+}
+
+/*分析头部字段*/
+HTTP_CODE parse_headers( char* szTemp )
+{
+    if ( szTemp[ 0 ] == '\0' )								//遇到一个空行，说明得到了一个正确的HTTP请求
+    {
+        return GET_REQUEST;
+    }
+    else if ( strncasecmp( szTemp, "Host:", 5 ) == 0 )		//处理HOST头部字段
+    {
+        szTemp += 5;
+        szTemp += strspn( szTemp, " \t" );
+        printf( "the request host is: %s\n", szTemp );
+    }
+    else
+    {														//其他头部字段都不处理
+        printf( "I can not handle this header\n" );
+    }
+
+    return NO_REQUEST;
+}
+
+/*分析HTTP请求的入口函数*/
+HTTP_CODE parse_content( char* buffer, int& checked_index, CHECK_STATE& checkstate, int& read_index, int& start_line )
+{
+    LINE_STATUS linestatus = LINE_OK;						//记录当前行的读取状态
+    HTTP_CODE retcode = NO_REQUEST;							//记录HTTP请求的处理结果
+	/*主状态机，用于从buffer中取出所有完整的行*/
+    while( ( linestatus = parse_line( buffer, checked_index, read_index ) ) == LINE_OK )
+    {
+        char* szTemp = buffer + start_line;					//startline是行在buffer中的起始位置
+        start_line = checked_index;							//记录下一行的起始地址
+		/*checkstate记录主状态机的当前的状态*/
+        switch ( checkstate )
+        {
+            case CHECK_STATE_REQUESTLINE:					//第一个状态，分析请求行
+            {
+                retcode = parse_requestline( szTemp, checkstate );
+                if ( retcode == BAD_REQUEST )
+                {
+                    return BAD_REQUEST;
+                }
+                break;
+            }
+            case CHECK_STATE_HEADER:						//第二个状态：分析头部字段
+            {
+                retcode = parse_headers( szTemp );
+                if ( retcode == BAD_REQUEST )
+                {
+                    return BAD_REQUEST;
+                }
+                else if ( retcode == GET_REQUEST )
+                {
+                    return GET_REQUEST;
+                }
+                break;
+            }
+            default:										//有错误
+            {
+                return INTERNAL_ERROR;
+            }
+        }
+    }															
+	/*若没有读取到一个完整的行，则表示还需要继续读取客户数据才能进一步分析*/
+    if( linestatus == LINE_OPEN )
+    {
+        return NO_REQUEST;
+    }
+    else
+    {
+        return BAD_REQUEST;
+    }
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+    
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+    
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+    
+	/*绑定服务器的套接字和ip端口号*/
+	int ret = bind(listenfd, (struct sockaddr*)&address, sizeof(address));	
+    assert( ret != -1 );
+    
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+    
+    struct sockaddr_in client_address;
+    socklen_t client_addrlength = sizeof( client_address );
+    int fd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+    if( fd < 0 )
+    {
+        printf( "errno is: %d\n", errno );
+    }
+    else
+    {
+        char buffer[ BUFFER_SIZE ];						//读缓冲区
+        memset( buffer, '\0', BUFFER_SIZE );			//初始化每个位置都是结束符
+        int data_read = 0;								//一次读取的字节数
+        int read_index = 0;								//当前已经读取了多少字节的客户数据
+        int checked_index = 0;							//当前已经分析完了多少字节的客户数段
+        int start_line = 0;								//行在buffer中的起始位置
+        CHECK_STATE checkstate = CHECK_STATE_REQUESTLINE;	//设置主状态机的起始位置
+        while( 1 )										//循环读取客户数据并分析
+        {
+            data_read = recv( fd, buffer + read_index, BUFFER_SIZE - read_index, 0 );
+            if ( data_read == -1 )
+            {
+                printf( "reading failed\n" );
+                break;
+            }
+            else if ( data_read == 0 )
+            {
+                printf( "remote client has closed the connection\n" );
+                break;
+            }
+    
+            read_index += data_read;
+			//分析目前已经获得的所有客户数据
+            HTTP_CODE result = parse_content( buffer, checked_index, checkstate, read_index, start_line );
+            if( result == NO_REQUEST )					//尚未得到一个完整的HTTP请求
+            {
+                continue;
+            }
+            else if( result == GET_REQUEST )			//得到一个完整正确的HTTP请求
+            {
+                send( fd, szret[0], strlen( szret[0] ), 0 );
+                break;
+            }
+			else{										//其他情况表示发生错误
+                send( fd, szret[1], strlen( szret[1] ), 0 );
+                break;
+            }
+        }
+        close( fd );
+    }
+    
+    close( listenfd );
+    return 0;
+}
+```
+
+![1569467543832](pic/1569467543832.png)
+
+![1569467464855](pic/1569467464855.png)
+
+## 7.提供服务器性能的其他建议
+
+### 1.池
+
+因为服务器硬件资源充裕所以就要以空间换时间，这就是池的概念。池是一组资源的集合，这组资源在服务器启动之初就被创建好并初始化，这叫静态资源分配。当客户请求时需要的资源就直接从池中获取，不用动态分配，避免了服务器对内核的频繁访问。
+
+根据不同的资源类型，池分为：内存池，进程池，线程池，连接池等。
+
+内存池用于socket的接收缓存和发送缓存。进程池和线程池都是并发编程的常用伎俩，当我们需要一个工作时直接从池里取得一个执行实体就不用动态fork和pthread_create了。连接池用于服务器或机群的内部永久连接
+
+### 2.数据复制
+
+高性能服务器应该避免不必要的数据复制，尤其是数据复制发生在用户代码和内核之间的时候。另外，当两个工作进程要传递大量数据时，应该考虑使用共享内存来共享数据
+
+### 3.上下文切换和锁
+
+并发程序必须考虑上下文切换，即进程切换或线程切换导致的系统开销。每个客户都创建一个线程的服务器工作模型是不可取的，半同步/半异步模式是一个比较合理的解决方案，它允许一个线程同时处理多个客户连接。
+
+另一个问题就是对共享资源的加锁保护。尽可能避免锁或者减小锁的粒度。
+
+# 九、I/O复用
+
+IO复用使得程序可以同时监听多个文件描述符。通常网络程序在以下情况要使用IO复用技术：
+
+- 客户端要同时处理多个socket。比如本章的非阻塞connect技术
+- 客户端要同时处理用户输入和网络连接。比如本章聊天室程序
+- 服务器要同时监听socket和链接socket
+- 服务器要同时处理TCP请求和UDP请求
+- 服务器要同时监听多个端口，或者多个服务
+
+## 1.select系统调用
+
+用途：在一段指定时间内，监听用户感兴趣的文件描述符上的可读、可写和异常事件
+
+### 1.select的API
+
+![1569504189060](pic/1569504189060.png)
+
+- nfds：指定被监听的文件描述符的总数，通常被设置成select监听的所有描述符中最大值+1，因为文件描述符从0开始计数。
+
+- readfds，writefds和exceptfds参数分别指向可读可写和异常等事件对应的文件描述符的集合。
+
+  - fd_set结构体是一个整型数组，每一位标记一个文件描述符。fd_set容纳的文件描述符的数量由FD_SETSIZE指定，这就限制了select能同时处理文件描述符的数量
+    ![1569504640632](pic/1569504640632.png)
+
+- timeout：用来设置select的超时时间。调用失败是timeout的值是不确定的。![1569504942437](pic/1569504942437.png)
+
+  结构体成员都传0表示select立即返回，timeout传NULL表示一直阻塞直到某个文件描述符就绪。
+
+### 2.文件描述符就绪条件
+
+网络编程中，下列情况socket可读：
+	1.socket内核缓冲区的字节数大于或等于其低水位标记SO_RCVLOWAT，此时可以无阻塞的读
+	2.socket通信的对方关闭连接，此时读操作返回0
+	3.监听socket上有新的连接请求
+	4.socket上有未处理的错误，此时用getsockopt来读取和清除错误
+
+下列情况socket可写：
+	1.socket内核发送缓冲区的可用字节数大于或等于低水位标记SO_SNDLOWAT，此时可以无阻塞的写
+	2.socket的写操作被关闭
+	3.socket使用非阻塞connect连接成功或者失败以后
+	4.socket上有未处理的错误，此时用getsockopt来读取和清除错误
+
+### 3.处理带外数据
+
+```c
+//同时处理普通数据和带外数据
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+
+int main( int argc, char* argv[] )
+{
+	if( argc <= 2 )
+	{
+		printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	printf( "ip is %s and port is %d\n", ip, port );
+
+	int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0 );
+
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+
+	ret = listen( listenfd, 5 );
+	assert( ret != -1 );
+
+	struct sockaddr_in client_address;
+    socklen_t client_addrlength = sizeof( client_address );
+	int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+	if ( connfd < 0 )
+	{
+		printf( "errno is: %d\n", errno );
+		close( listenfd );
+	}
+
+	char remote_addr[INET_ADDRSTRLEN];
+	printf( "connected with ip: %s and port: %d\n", inet_ntop( AF_INET, &client_address.sin_addr, remote_addr, INET_ADDRSTRLEN ), ntohs( client_address.sin_port ) );
+
+	char buf[1024];
+	fd_set read_fds;
+	fd_set exception_fds;
+
+	FD_ZERO(&read_fds);
+	FD_ZERO(&exception_fds);
+
+	int nReuseAddr = 1;		//设置socket选项，向普通数据一样读取带外数据
+	setsockopt( connfd, SOL_SOCKET, SO_OOBINLINE, &nReuseAddr, sizeof( nReuseAddr ) );
+	while( 1 )
+	{
+		memset( buf, '\0', sizeof( buf ) );
+		/*每次调用select前都要重现在read_fds和exception_fds中设置connfd，因为事件发生后文件描述符集合被内核修改*/
+		FD_SET( connfd, &read_fds );
+		FD_SET( connfd, &exception_fds );
+
+        ret = select( connfd + 1, &read_fds, NULL, &exception_fds, NULL );
+		printf( "select one\n" );
+        if ( ret < 0 )
+        {
+                printf( "selection failure\n" );
+                break;
+        }
+		/*对于可读事件采用普通的recv来读取数据*/
+        if ( FD_ISSET( connfd, &read_fds ) )
+		{
+        	ret = recv( connfd, buf, sizeof( buf )-1, 0 );
+			if( ret <= 0 )
+			{
+				break;
+			}
+			printf( "get %d bytes of normal data: %s\n", ret, buf );
+		}
+		/*对于异常事件采用MSG_OOB标志的recv函数来读取带外数据*/
+		else if( FD_ISSET( connfd, &exception_fds ) )
+        {
+        	ret = recv( connfd, buf, sizeof( buf )-1, MSG_OOB );
+		if( ret <= 0 )
+		{
+			break;
+		}
+		printf( "get %d bytes of oob data: %s\n", ret, buf );
+        }
+
+	}
+
+	close( connfd );
+	close( listenfd );
+	return 0;
+}
+```
+
+## 2.poll系统调用
+
+和select类似，在指定时间内轮询一定数量的文件描述符，测试其中是否有就绪。
+
+![1569546571650](pic/1569546571650.png)
+
+- fds是一个pollfd的结构体的数组，指定我们感兴趣的文件描述符发送可读、可写和异常事件
+  ![1569546632695](pic/1569546632695.png)
+
+  - events告诉poll监听fd上的哪些事件
+    ![1569546738126](pic/1569546738126.png)
+
+    ![1569546748599](pic/1569546748599.png)
+
+- nfd：指定被监听事件集合fds的大小
+  ![1569546853613](pic/1569546853613.png)
+- timeout：指定poll的超时值，单位ms，=-1表示永久阻塞
+
+## 3.epoll系列系统调用
+
+### 1.内核事件表
+
+epoll使用一组函数来完成任务而不是一个函数，epoll把用户关心的文件描述符上的事件放在内核里的一个事件表中，不像select和poll那样每次调用都重复传入文件描述符集或事件集，但epoll需要一个额外的文件名来表示内核中这个事件表。这个文件描述符有epoll_create创建：
+
+![1569547344823](pic/1569547344823.png)
+
+- size：并不起什么作用，只是给内核一个提示，他告诉事件表需要多大
+
+下面的函数操作epoll的内核事件表：
+
+![1569547483193](pic/1569547483193.png)
+
+- fd：要操作的文件描述符
+
+- op：指定操作类型
+
+  ![1569547531726](pic/1569547531726.png)
+
+- event：指定事件，是epoll_event结构体指针类型，定义如下
+
+  ![1569547589199](pic/1569547589199.png)
+
+  - events：描述事件类型
+  - ![1569548698072](pic/1569548698072.png)
+
+### 2.epoll_wait
+
+在一段超时时间内等待一组文件描述符上的事件
+
+![1569548837077](pic/1569548837077.png)
+
+返回就绪的文件描述符的个数，失败返回-1并设置errno，如果检测到事件，就将所有就绪的事件从内核事件表（epfd）复制到第二个参数events指向的数组
+
+```c
+//poll和epoll在使用上的差别
+/*如何索引poll返回的就绪文件描述符*/
+int ret=poll(fds,MAX_EVENT_NUMBER,-1);
+/*必须遍历所有已注册的文件描述符并且找到其中的就绪态*/
+for(int i=0;i<MAX_EVENT_NUMBER;i++){
+    if(fds[i].revents&POLLIN){
+        int sockfd=fd[i].fd;
+    }
+}
+/*如何索引epoll返回的就绪文件描述符*/
+int ret=epoll_wait(epollfd,events,MAX_EVENT_NUMBER,-1);
+/*仅遍历就绪的ret个文件描述符*/
+for(int i=0;i<ret;i++){
+    int sockfd=events[i].data.fd;
+    /*sockfd肯定就绪，直接处理*/
+}
+```
+
+### 3.LT和ET模式
+
+epoll对文件描述符的操作有两种模式：LT水平触发，ET边沿触发，LT默认。当向epoll内核事件表中注册一个文件描述符上的EPOLLET事件时，epoll将以ET模式来操作该文件描述符。ET模式很大程度上降低了同一个epoll事件被重复触发的次数，所以效率高。
+
+**水平：**如果文件描述符已经就绪可以非阻塞的执行IO操作了,此时会触发通知.允许在任意时刻重复检测IO的状态.select,poll就属于水平触发。只有在高电平或者低电平时才触发。
+
+**边缘：**如果文件描述符自上次状态改变后有新的IO活动到来,此时会触发通知.在收到一个IO事件通知后要尽可能多的执行IO操作,因为如果在一次通知中没有执行完IO那么就需要等到下一次新的IO活动到来才能获取到就绪的描述符.信号驱动式IO就属于边缘触发。只有在电平发生变化时才触发。
+
+```c
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+
+#define MAX_EVENT_NUMBER 1024
+#define BUFFER_SIZE 10
+
+/*将文件描述符设置为非阻塞的*/
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+/*将文件描述符fd上的EPOLLIN注册到epollfd指示的epoll内核事件表中，参数enable_et指定是否对fd启用ET模式*/
+void addfd( int epollfd, int fd, bool enable_et )
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN;
+    if( enable_et )
+    {
+        event.events |= EPOLLET;
+    }
+    epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );
+}
+
+/*LT模式的工作流程*/
+void lt( epoll_event* events, int number, int epollfd, int listenfd )
+{
+    char buf[ BUFFER_SIZE ];
+    for ( int i = 0; i < number; i++ )
+    {
+        int sockfd = events[i].data.fd;
+        if ( sockfd == listenfd )
+        {
+            struct sockaddr_in client_address;
+            socklen_t client_addrlength = sizeof( client_address );
+            int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+            addfd( epollfd, connfd, false );
+        }
+		/*只要读缓冲区还有未读出的数据，这段代码就被触发*/
+        else if ( events[i].events & EPOLLIN )
+        {
+            printf( "event trigger once\n" );
+            memset( buf, '\0', BUFFER_SIZE );
+            int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+            if( ret <= 0 )
+            {
+                close( sockfd );
+                continue;
+            }
+            printf( "get %d bytes of content: %s\n", ret, buf );
+        }
+        else
+        {
+            printf( "something else happened \n" );
+        }
+    }
+}
+
+/*ET模式的工作流程*/
+void et( epoll_event* events, int number, int epollfd, int listenfd )
+{
+    char buf[ BUFFER_SIZE ];
+    for ( int i = 0; i < number; i++ )
+    {
+        int sockfd = events[i].data.fd;
+        if ( sockfd == listenfd )
+        {
+            struct sockaddr_in client_address;
+            socklen_t client_addrlength = sizeof( client_address );
+            int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+            addfd( epollfd, connfd, true );
+        }
+		/*这段代码不会重复触发，所以我们循环读取数据，以确保把socket读缓冲区中的所有数据读出*/
+        else if ( events[i].events & EPOLLIN )
+        {
+            printf( "event trigger once\n" );
+            while( 1 )
+            {
+                memset( buf, '\0', BUFFER_SIZE );
+                int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+                if( ret < 0 )
+                {
+					/*对于非阻塞IO，下面条件成立表示数据全部读取完毕*/
+                    if( ( errno == EAGAIN ) || ( errno == EWOULDBLOCK ) )
+                    {
+                        printf( "read later\n" );
+                        break;
+                    }
+                    close( sockfd );
+                    break;
+                }
+                else if( ret == 0 )
+                {
+                    close( sockfd );
+                }
+                else
+                {
+                    printf( "get %d bytes of content: %s\n", ret, buf );
+                }
+            }
+        }
+        else
+        {
+            printf( "something else happened \n" );
+        }
+    }
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+    assert( ret != -1 );
+
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+
+    epoll_event events[ MAX_EVENT_NUMBER ];
+    int epollfd = epoll_create( 5 );
+    assert( epollfd != -1 );
+    addfd( epollfd, listenfd, true );
+
+    while( 1 )
+    {
+        int ret = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+        if ( ret < 0 )
+        {
+            printf( "epoll failure\n" );
+            break;
+        }
+    
+        lt( events, ret, epollfd, listenfd );
+        //et( events, ret, epollfd, listenfd );
+    }
+
+    close( listenfd );
+    return 0;
+}
+```
+
+### 4.EPOLLONESHOT事件
+
+两个线程同时操作一个socket不是我们期望的，我们期望一个socket的连接在任意时刻都只被一个线程处理，可以使用EPOLLONESHOT事件实现。对于注册了该事件的文件描述符，操作系统最多触发其上一个可读可写或异常事件，且只触发一次。
+
+```c
+//EPOLLONESHOT事件的使用
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+
+#define MAX_EVENT_NUMBER 1024
+#define BUFFER_SIZE 1024
+struct fds
+{
+   int epollfd;
+   int sockfd;
+};
+
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+/*将fd上的EPOLLIN和EPOLLET事件注册到epollfd指示的epoll内核事件表中，
+参数oneshot指定是否注册fd上的EPOLLONESHOT事件*/
+void addfd( int epollfd, int fd, bool oneshot )
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET;
+    if( oneshot )
+    {
+        event.events |= EPOLLONESHOT;
+    }
+    epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );
+}
+
+/*重置fd上的事件，让以后的线程可以处理这个socket，
+这样以后尽管fd上的EPOLLONESHOT事件被注册，但是操作系统
+仍会触发fd上的EPOLLIN事件，且只触发一次*/
+void reset_oneshot( int epollfd, int fd )
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    epoll_ctl( epollfd, EPOLL_CTL_MOD, fd, &event );
+}
+/*工作线程*/
+void* worker( void* arg )
+{
+    int sockfd = ( (fds*)arg )->sockfd;
+    int epollfd = ( (fds*)arg )->epollfd;
+    printf( "start new thread to receive data on fd: %d\n", sockfd );
+    char buf[ BUFFER_SIZE ];
+    memset( buf, '\0', BUFFER_SIZE );
+	/*循环读取socketfd上的数据，直到遇到EAGAIN错误*/
+    while( 1 )
+    {
+        int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+        if( ret == 0 )
+        {
+            close( sockfd );
+            printf( "foreiner closed the connection\n" );
+            break;
+        }
+        else if( ret < 0 )
+        {
+            if( errno == EAGAIN )
+            {
+                reset_oneshot( epollfd, sockfd );	//重置
+                printf( "read later\n" );
+                break;
+            }
+        }
+        else
+        {
+            printf( "get content: %s\n", buf );
+            sleep( 5 );
+        }
+    }
+    printf( "end thread receiving data on fd: %d\n", sockfd );
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+    assert( ret != -1 );
+
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+
+    epoll_event events[ MAX_EVENT_NUMBER ];
+    int epollfd = epoll_create( 5 );
+    assert( epollfd != -1 );
+    addfd( epollfd, listenfd, false );
+
+    while( 1 )
+    {
+        int ret = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+        if ( ret < 0 )
+        {
+            printf( "epoll failure\n" );
+            break;
+        }
+    
+        for ( int i = 0; i < ret; i++ )
+        {
+            int sockfd = events[i].data.fd;
+            if ( sockfd == listenfd )
+            {
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof( client_address );
+                int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+                addfd( epollfd, connfd, true );
+            }
+            else if ( events[i].events & EPOLLIN )
+            {
+                pthread_t thread;
+                fds fds_for_new_worker;
+                fds_for_new_worker.epollfd = epollfd;
+                fds_for_new_worker.sockfd = sockfd;
+                pthread_create( &thread, NULL, worker, ( void* )&fds_for_new_worker );
+            }
+            else
+            {
+                printf( "something else happened \n" );
+            }
+        }
+    }
+
+    close( listenfd );
+    return 0;
+}
+```
+
+## 4.三组IO复用函数的比较
+
+**select**：它的参数类型fd_set没有将文件描述符和事件绑定，仅仅是一个文件描述符集合，因此select需要提供3个这种类型的参数来分别传入和输出可读、可写和异常等事件。这使得select不能处理更多类型的事件，另外由于内核对fd_set的在线修改，程序下次调用不得不重置3个fd_set集合。
+
+**poll**：把文件描述符和事件都定义其中，任何事件都统一处理，无需重置pollfd，并且内核每次修改的是pollfd结构体的revents成员，而events成员保持不变，因此下次调用poll时程序无需重置pollfd类型的事件集参数，但是和select一样都返回整个用户注册的事件集合。
+
+**epoll**：在内核中维护一张事件表，无需从用户空间读入这些事件，无需反复从用户空间读取这些事件
+
+还有select和poll支持低效LT模式，并且epoll还支持EPOLLONESHOT事件。select和epoll采用轮询的方式扫描整个文件描述符集合，并将就绪的文件描述符返回用户程序，而epoll_wait采用回调的方式，内核检测到就绪事件就会触发回调函数，回调函数把文件描述符对应的时间插入内核就绪事件队列。epoll_wait适用于连接数量多，但是连接活动少的情况。
+
+![1569636189322](pic/1569636189322.png)
+
+## 5.IO复用的高级应用一：非阻塞connect
+
+connect出错时的一种errno值：EINPROGRESS。是对非阻塞的socket调用connect而连接有没有立即建立时产生的。
+
+```c
+//非阻塞connect的一种实现
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <stdio.h>
+#include <time.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <string.h>
+
+#define BUFFER_SIZE 1023
+
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+/*超时连接函数，成功就返回处于连接状态的socket*/
+int unblock_connect( const char* ip, int port, int time )
+{
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int sockfd = socket( PF_INET, SOCK_STREAM, 0 );
+    int fdopt = setnonblocking( sockfd );			//设置非阻塞
+    ret = connect( sockfd, ( struct sockaddr* )&address, sizeof( address ) );
+    if ( ret == 0 )
+    {
+        printf( "connect with server immediately\n" );
+        fcntl( sockfd, F_SETFL, fdopt );	//如果连接成功则恢复sockfd的属性并且立即返回
+        return sockfd;
+    }
+	//如果连接没有立即建立，那么只有多有当errno是EINPROGRESS的时候表示连接还在进行，否则出错返回
+    else if ( errno != EINPROGRESS )
+    {
+        printf( "unblock connect not support\n" );
+        return -1;
+    }
+	//错误是EINPROGRESS，表示连接不能马上建立成功
+    fd_set readfds;
+    fd_set writefds;
+    struct timeval timeout;
+
+    FD_ZERO( &readfds );
+    FD_SET( sockfd, &writefds );
+
+    timeout.tv_sec = time;
+    timeout.tv_usec = 0;
+
+    ret = select( sockfd + 1, NULL, &writefds, NULL, &timeout );
+    if ( ret <= 0 )
+    {	//select超时出错立即返回
+        printf( "connection time out\n" );
+        close( sockfd );
+        return -1;
+    }
+
+    if ( ! FD_ISSET( sockfd, &writefds  ) )
+    {
+        printf( "no events on sockfd found\n" );
+        close( sockfd );
+        return -1;
+    }
+
+    int error = 0;
+    socklen_t length = sizeof( error );
+	//使用getsocktopt来获取并清除sockfd上的错误
+    if( getsockopt( sockfd, SOL_SOCKET, SO_ERROR, &error, &length ) < 0 )
+    {
+        printf( "get socket option failed\n" );
+        close( sockfd );
+        return -1;
+    }
+	/*错误号不为0表示连接出错*/
+    if( error != 0 )
+    {
+        printf( "connection failed after select with the error: %d \n", error );
+        close( sockfd );
+        return -1;
+    }
+    //连接成功
+    printf( "connection ready after select with the socket: %d \n", sockfd );
+    fcntl( sockfd, F_SETFL, fdopt );
+    return sockfd;
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int sockfd = unblock_connect( ip, port, 10 );
+    if ( sockfd < 0 )
+    {
+        return 1;
+    }
+    shutdown( sockfd, SHUT_WR );
+    sleep( 200 );
+    printf( "send data out\n" );
+    send( sockfd, "abc", 3, 0 );
+    //sleep( 600 );
+    return 0;
+}
+```
+
+存在移植性问题，非阻塞的socket会导致connect始终失败。
+
+## 6.IO复用的高级应用二：聊天室程序
+
+阐释IO复用技术如何同时来处理网络连接和用户输入，该聊天室会让所有用户同时在线群聊
+
+### 1.客户端
+
+使用poll同时监听用户输入和网络连接，并且利用splice函数将用户输入内容重定向到网络连接来发送，从而实现零拷贝。
+
+功能：从标准输入读入数据发送到服务器，向标准输出打印服务器发送给他的数据
+
+```c
+//聊天室客户端程序
+#define _GNU_SOURCE 1
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <poll.h>
+#include <fcntl.h>
+
+#define BUFFER_SIZE 64
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    struct sockaddr_in server_address;
+    bzero( &server_address, sizeof( server_address ) );
+    server_address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &server_address.sin_addr );
+    server_address.sin_port = htons( port );
+
+    int sockfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( sockfd >= 0 );
+    if ( connect( sockfd, ( struct sockaddr* )&server_address, sizeof( server_address ) ) < 0 )
+    {
+        printf( "connection failed\n" );
+        close( sockfd );
+        return 1;
+    }
+
+    pollfd fds[2];
+	/*注册文件描述符0和文件描述符sockfd上的可读事件*/
+    fds[0].fd = 0;
+    fds[0].events = POLLIN;		//标准输入有输入时，poll会返回
+    fds[0].revents = 0;
+    fds[1].fd = sockfd;
+    fds[1].events = POLLIN | POLLRDHUP;		//socket有数据到达|TCP连接被对方关闭
+    fds[1].revents = 0;
+    char read_buf[BUFFER_SIZE];
+    int pipefd[2];
+    int ret = pipe( pipefd );
+    assert( ret != -1 );
+
+    while( 1 )
+    {
+        ret = poll( fds, 2, -1 );
+        if( ret < 0 )
+        {
+            printf( "poll failure\n" );
+            break;
+        }
+
+        if( fds[1].revents & POLLRDHUP )
+        {
+            printf( "server close the connection\n" );
+            break;
+        }
+        else if( fds[1].revents & POLLIN )
+        {
+            memset( read_buf, '\0', BUFFER_SIZE );
+			recv(fds[1].fd, read_buf, BUFFER_SIZE - 1, 0);//服务器端有数据发送来
+            printf( "%s\n", read_buf );
+        }
+
+        if( fds[0].revents & POLLIN )
+        {
+			/*使用solice将用户输入的数据之间写到sockfd上，零拷贝*/
+            ret = splice( 0, NULL, pipefd[1], NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+            ret = splice( pipefd[0], NULL, sockfd, NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+        }
+    }
+    
+    close( sockfd );
+    return 0;
+}
+```
+
+### 2.服务器
+
+使用poll同时管理socket和链接socket，并且牺牲空间换时间。
+
+```c
+//聊天室服务器程序
+#define _GNU_SOURCE 1
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <poll.h>
+
+#define USER_LIMIT 5		//用户最大数量
+#define BUFFER_SIZE 64		//读写缓冲区大小
+#define FD_LIMIT 65535		//文件描述符的数量限制
+/*客户数据：客户端socket地址，待写到客户端的数据的位置，从客户端读入的数据*/
+struct client_data
+{
+    sockaddr_in address;
+    char* write_buf;
+    char buf[ BUFFER_SIZE ];
+};
+
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+    assert( ret != -1 );
+
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+
+	/*每个可能的socket连接都可以获得一个这样的对象，并且socket的值可以直接用来索引*/
+    client_data* users = new client_data[FD_LIMIT];
+    pollfd fds[USER_LIMIT+1];
+    int user_counter = 0;
+    for( int i = 1; i <= USER_LIMIT; ++i )
+    {
+        fds[i].fd = -1;
+        fds[i].events = 0;
+    }
+    fds[0].fd = listenfd;
+    fds[0].events = POLLIN | POLLERR;
+    fds[0].revents = 0;
+
+    while( 1 )
+    {
+        ret = poll( fds, user_counter+1, -1 );		//fds监听的事件会不断添加，初始只有listenfd
+        if ( ret < 0 )
+        {
+            printf( "poll failure\n" );
+            break;
+        }
+    
+        for( int i = 0; i < user_counter+1; ++i )
+        {
+            if( ( fds[i].fd == listenfd ) && ( fds[i].revents & POLLIN ) )	//有新的客户连接
+            {
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof( client_address );
+                int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+                if ( connfd < 0 )
+                {
+                    printf( "errno is: %d\n", errno );
+                    continue;
+                }
+                if( user_counter >= USER_LIMIT )
+                {
+                    const char* info = "too many users\n";
+                    printf( "%s", info );
+                    send( connfd, info, strlen( info ), 0 );
+                    close( connfd );		//如果请求太多就关闭新到的连接
+                    continue;
+                }
+                user_counter++;
+                users[connfd].address = client_address;
+                setnonblocking( connfd );
+                fds[user_counter].fd = connfd;
+                fds[user_counter].events = POLLIN | POLLRDHUP | POLLERR;
+                fds[user_counter].revents = 0;
+                printf( "comes a new user, now have %d users\n", user_counter );
+            }
+            else if( fds[i].revents & POLLERR )
+            {
+                printf( "get an error from %d\n", fds[i].fd );
+                char errors[ 100 ];
+                memset( errors, '\0', 100 );
+                socklen_t length = sizeof( errors );
+                if( getsockopt( fds[i].fd, SOL_SOCKET, SO_ERROR, &errors, &length ) < 0 )
+                {
+                    printf( "get socket option failed\n" );
+                }
+                continue;
+            }
+            else if( fds[i].revents & POLLRDHUP )		//某个客户端关闭
+            {
+                users[fds[i].fd] = users[fds[user_counter].fd];
+                close( fds[i].fd );
+                fds[i] = fds[user_counter];
+                i--;
+                user_counter--;
+                printf( "a client left\n" );
+            }
+            else if( fds[i].revents & POLLIN )
+            {
+                int connfd = fds[i].fd;
+                memset( users[connfd].buf, '\0', BUFFER_SIZE );
+                ret = recv( connfd, users[connfd].buf, BUFFER_SIZE-1, 0 );
+                printf( "get %d bytes of client data %s from %d\n", ret, users[connfd].buf, connfd );
+                if( ret < 0 )
+                {
+                    if( errno != EAGAIN )	//因为非阻塞连续读可能会读不到数据，关闭连接
+                    {
+                        close( connfd );
+                        users[fds[i].fd] = users[fds[user_counter].fd];
+                        fds[i] = fds[user_counter];
+                        i--;
+                        user_counter--;
+                    }
+                }
+                else if( ret == 0 )
+                {
+                    printf( "code should not come to here\n" );
+                }
+                else           //接收到客户数据，则通知其他socket连接准备写数据
+                {
+                    for( int j = 1; j <= user_counter; ++j )
+                    {
+                        if( fds[j].fd == connfd )
+                        {
+                            continue;
+                        }
+                        
+                        fds[j].events |= ~POLLIN;
+                        fds[j].events |= POLLOUT;
+                        users[fds[j].fd].write_buf = users[connfd].buf;
+                    }
+                }
+            }
+            else if( fds[i].revents & POLLOUT )
+            {
+                int connfd = fds[i].fd;
+                if( ! users[connfd].write_buf )
+                {
+                    continue;
+                }
+                ret = send( connfd, users[connfd].write_buf, strlen( users[connfd].write_buf ), 0 );
+                users[connfd].write_buf = NULL;
+                fds[i].events |= ~POLLOUT;
+                fds[i].events |= POLLIN;
+            }
+        }
+    }
+
+    delete [] users;
+    close( listenfd );
+    return 0;
+}
+```
+
+## 7.IO复用的高级应用三：同时处理TCP和UDP服务
+
+超级服务inetd的调试服务adbd的可以监听多个端口，一个socket只能和一个socket绑定，要监听多个socket就要创建多个socket，并且绑定到多个端口上。
+
+```c
+//同时处理TCP请求和UDP请求的回射服务器
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+
+#define MAX_EVENT_NUMBER 1024
+#define TCP_BUFFER_SIZE 512
+#define UDP_BUFFER_SIZE 1024
+
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+void addfd( int epollfd, int fd )
+{
+    epoll_event event;
+    event.data.fd = fd;
+    //event.events = EPOLLIN | EPOLLET;
+    event.events = EPOLLIN;				//设置要监听什么事件
+    epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );				//设置为非阻塞，立马返回
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );	//监听TCP
+    assert( ret != -1 );
+
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+    int udpfd = socket( PF_INET, SOCK_DGRAM, 0 );
+    assert( udpfd >= 0 );
+
+    ret = bind( udpfd, ( struct sockaddr* )&address, sizeof( address ) );		//监听UDP
+    assert( ret != -1 );
+
+    epoll_event events[ MAX_EVENT_NUMBER ];
+    int epollfd = epoll_create( 5 );
+    assert( epollfd != -1 );
+    addfd( epollfd, listenfd );	//添加到树上
+    addfd( epollfd, udpfd );
+
+    while( 1 )
+    {
+        int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+        if ( number < 0 )
+        {
+            printf( "epoll failure\n" );
+            break;
+        }
+    
+        for ( int i = 0; i < number; i++ )		//挨个遍历监听到的事件
+        {
+            int sockfd = events[i].data.fd;
+            if ( sockfd == listenfd )			//是tcp的套接字
+            {
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof( client_address );
+                int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+                addfd( epollfd, connfd );
+            }
+            else if ( sockfd == udpfd )			//是udp的套接字,有新的udp连接请求
+            {
+                char buf[ UDP_BUFFER_SIZE ];
+                memset( buf, '\0', UDP_BUFFER_SIZE );
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof( client_address );
+
+                ret = recvfrom( udpfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, &client_addrlength );
+                if( ret > 0 )
+                {
+                    sendto( udpfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, client_addrlength );
+                }
+            }
+            else if ( events[i].events & EPOLLIN )	
+            {
+                char buf[ TCP_BUFFER_SIZE ];
+                while( 1 )
+                {
+                    memset( buf, '\0', TCP_BUFFER_SIZE );
+                    ret = recv( sockfd, buf, TCP_BUFFER_SIZE-1, 0 );
+                    if( ret < 0 )
+                    {
+                        if( ( errno == EAGAIN ) || ( errno == EWOULDBLOCK ) )
+                        {
+                            break;
+                        }
+                        close( sockfd );
+                        break;
+                    }
+                    else if( ret == 0 )
+                    {
+                        close( sockfd );
+                    }
+                    else
+                    {
+                        send( sockfd, buf, ret, 0 );
+                    }
+                }
+            }
+            else
+            {
+                printf( "something else happened \n" );
+            }
+        }
+    }
+
+    close( listenfd );
+    return 0;
+}
+```
+
+## 8.超级服务xinetd
+
+Linux因特网服务inetd是超级服务，它同时管理多个子服务，即监听多个端口。
+
+### 1.xinetd配置文件
+
+xinetd采用/etc/xinetd.conf主配置文件和/etc/xinetd.d目录下的子配置文件来管理所有服务。
+
+**/etc/xinetd.d/telnet的典型内容如下：**
+
+![1569760562982](pic/1569760562982.png)
+
+![1569760583327](pic/1569760583327.png)
+
+### 2.xinetd工作流程
+
+其管理的子服务中有的是标准服务，如daytime日期服务，echo回射服务和discard丢弃服务，xinetd在内部直接处理这些服务。还有的子服务需要调用外部的服务器程序来处理，通过fork和exec函数来加载运行这些服务器程序，比如telnet，ftp这种类型的子服务。
+
+![1569761141440](pic/1569761141440.png)
+
+# 十、信号
+
+信号可由如下条件产生：终端字符、系统异常、系统状态变化、运行kill命令或kill函数
+
+## 1.信号概述
+
+### 1.发送信号
+
+![1569811705016](pic/1569811705016.png)
+
+![1569811725158](pic/1569811725158.png)
+
+如果sig为0表示不发送任何信号，用sig设置为0可以用来检测目标进程或进程组是否存在，因为检查工作总在信号发送之前执行，但是这种检测是不可靠的，一方面进程PID的回绕，另一方面不是原子操作。
+
+![1569811850027](pic/1569811850027.png)
+
+### 2.信号处理方式
+
+![1569811892309](pic/1569811892309.png)
+
+信号处理函数应该是可重入的，除了用户自定义信号处理函数外，bits/signum.h文件还定义了信号的两种处理方式：
+![1569811951518](pic/1569811951518.png)
+
+SIG_IGN：表示忽略目标信号			SIG_DFL：表示使用信号默认的处理方式（结束进程Term，忽略信号Ign，结束进程并生成核心转储文件Core，暂停进程Stop，继续进程Cont）
+
+### 3.Linux信号
+
+都定义在bits/signum.h中
+
+![1569812106227](pic/1569812106227.png)
+
+![1569812135799](pic/1569812135799.png)
+![1569812171215](pic/1569812171215.png)
+
+### 4.中断系统调用
+
+程序在执行处于阻塞状态的系统调用时接收到信号，默认情况下系统调用会被中断，并且errno设置为EINTR，我们可以使用sigaction函数为信号设置SA_RESTART标志以自动重启被该信号中断的系统调用。
+
+## 2.信号函数
+
+### 1.signal
+
+![1569812671238](pic/1569812671238.png)
+
+调用成功返回一个函数指针，也就是信号处理函数。
+
+### 2.sigaction
+
+![1569813092544](pic/1569813092544.png)
+
+- oact：输出信号先前的处理方式（如果不为NULL）
+
+  sigaction结构体定义如下：
+  ![1569813175582](pic/1569813175582.png)
+  ![1569813185518](pic/1569813185518.png)
+
+  - sa_handler：信号处理函数
+
+  - sa_mask：设置进程的信号掩码，是信号集类型
+
+  - sa_flag：设置接收到信号时的行为
+
+    ![1569813326850](pic/1569813326850.png)
+
+## 3.信号集
+
+### 1.信号集函数
+
+![1569814860947](pic/1569814860947.png)
+
+每个元素的每个位表示一个信号。
+
+![1569814897330](pic/1569814897330.png)
+
+### 2.进程信号掩码
+
+查看或者设置进程的信号掩码：
+
+![1569814934245](pic/1569814934245.png)
+
+![1569814999203](pic/1569814999203.png)
+
+_set设置为NULL则进程信号掩码不变，但是可以返回\_oset.
+
+### 3.被挂起的信号
+
+如果给进程发送一个被屏蔽的信号，则操作系统将该信号设置为进程的一个被挂起的信号，如果取消屏蔽，进程就会立即接收到，如下函数获得进程当前被挂起的信号集：
+
+![1569815153902](pic/1569815153902.png)
+
+## 4.统一事件源
+
+信号处理期间，系统不会再次出发它。主循环根据接收到的信号值执行目标信号对应的逻辑代码。
+
+```c
+//统一事件源
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <signal.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+
+#define MAX_EVENT_NUMBER 1024
+static int pipefd[2];
+
+int setnonblocking( int fd )
+{
+    int old_option = fcntl( fd, F_GETFL );
+    int new_option = old_option | O_NONBLOCK;
+    fcntl( fd, F_SETFL, new_option );
+    return old_option;
+}
+
+void addfd( int epollfd, int fd )
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET;
+    epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+    setnonblocking( fd );
+}
+
+void sig_handler( int sig )
+{
+	/*保留原来的errno，在函数最后恢复，以保证函数的可重入行*/
+    int save_errno = errno;
+    int msg = sig;
+    send( pipefd[1], ( char* )&msg, 1, 0 );	//将信号值写入管道，通知主循环
+    errno = save_errno;
+}
+
+/*设置信号的处理函数*/
+void addsig( int sig )
+{
+    struct sigaction sa;
+    memset( &sa, '\0', sizeof( sa ) );
+    sa.sa_handler = sig_handler;	//设置sig信号对应handler
+    sa.sa_flags |= SA_RESTART;		//重新调用被该信号终止的系统调用
+    sigfillset( &sa.sa_mask );
+    assert( sigaction( sig, &sa, NULL ) != -1 );
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( listenfd >= 0 );
+
+    //int nReuseAddr = 1;
+    //setsockopt( listenfd, SOL_SOCKET, SO_REUSEADDR, &nReuseAddr, sizeof( nReuseAddr ) );
+    ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+    if( ret == -1 )
+    {
+        printf( "errno is %d\n", errno );
+        return 1;
+    }
+    //assert( ret != -1 );
+
+    ret = listen( listenfd, 5 );
+    assert( ret != -1 );
+
+    epoll_event events[ MAX_EVENT_NUMBER ];
+    int epollfd = epoll_create( 5 );
+    assert( epollfd != -1 );
+    addfd( epollfd, listenfd );
+
+    ret = socketpair( PF_UNIX, SOCK_STREAM, 0, pipefd );
+    assert( ret != -1 );
+    setnonblocking( pipefd[1] );
+    addfd( epollfd, pipefd[0] );
+
+    // add all the interesting signals here
+    addsig( SIGHUP );			//添加到信号处理集上
+    addsig( SIGCHLD );
+    addsig( SIGTERM );
+    addsig( SIGINT );
+    bool stop_server = false;
+
+    while( !stop_server )
+    {
+        int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+        if ( ( number < 0 ) && ( errno != EINTR ) )
+        {
+            printf( "epoll failure\n" );
+            break;
+        }
+    
+        for ( int i = 0; i < number; i++ )
+        {
+            int sockfd = events[i].data.fd;
+            if( sockfd == listenfd )
+            {
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof( client_address );
+                int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+                addfd( epollfd, connfd );
+            }
+            else if( ( sockfd == pipefd[0] ) && ( events[i].events & EPOLLIN ) )
+            {
+                int sig;
+                char signals[1024];
+                ret = recv( pipefd[0], signals, sizeof( signals ), 0 );
+                if( ret == -1 )
+                {
+                    continue;
+                }
+                else if( ret == 0 )
+                {
+                    continue;
+                }
+                else
+                {
+                    for( int i = 0; i < ret; ++i )
+                    {
+                        //printf( "I caugh the signal %d\n", signals[i] );
+                        switch( signals[i] )
+                        {
+                            case SIGCHLD:
+                            case SIGHUP:
+                            {
+                                continue;
+                            }
+                            case SIGTERM:
+                            case SIGINT:
+                            {
+                                stop_server = true;
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+            }
+        }
+    }
+
+    printf( "close fds\n" );
+    close( listenfd );
+    close( pipefd[1] );
+    close( pipefd[0] );
+    return 0;
+}
+```
+
+## 5.网络编程相关信号
+
+### 1.SIGHUP
+
+当挂起进程的控制终端时，该函数会被触发。对于没有控制终端的后台程序而言，他们通常利用SIGHUP信号来强制服务器重读配置文件，比如xinetd服务程序。
+
+具体的xinetd处理SIGHUP的流程见P189.
+
+### 2.SIGPIPE
+
+默认情况下，往一个读端关闭或socket连接中写数据都会引发SIGPIPE信号，SIGPIPE信号的默认行为是结束进程。
+
+我们可以用send函数的MSG_NOSIGNAL标志来禁止写操作触发SIGPIPE信号，在这种情况下我们应该使用send函数反馈的errno值来判断管道或者socket连接的读端是否关闭。此外，也可以用IO复用，以poll为例，当管道读端关闭时，写端文件描述符上的POLLHUP事件会被触发。当socket连接被对方关闭时，socket上的POLLRDHUP事件会被触发。
+
+### 3.SIGURG
+
+内核通知应用程序带外数据的两种方法：1.IO复用技术。2.使用SIGURG信号
+
+```c
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+#include <signal.h>
+#include <fcntl.h>
+
+#define BUF_SIZE 1024
+
+static int connfd;
+
+/*SIGURG信号处理函数*/
+void sig_urg( int sig )
+{
+    int save_errno = errno;
+    
+    char buffer[ BUF_SIZE ];
+    memset( buffer, '\0', BUF_SIZE );
+    int ret = recv( connfd, buffer, BUF_SIZE-1, MSG_OOB );
+    printf( "got %d bytes of oob data '%s'\n", ret, buffer );	//使用信号返回接收到的数据
+
+    errno = save_errno;
+}
+
+void addsig( int sig, void ( *sig_handler )( int ) )
+{
+    struct sigaction sa;
+    memset( &sa, '\0', sizeof( sa ) );
+    sa.sa_handler = sig_handler;
+    sa.sa_flags |= SA_RESTART;
+    sigfillset( &sa.sa_mask );
+    assert( sigaction( sig, &sa, NULL ) != -1 );
+}
+
+int main( int argc, char* argv[] )
+{
+    if( argc <= 2 )
+    {
+        printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+        return 1;
+    }
+    const char* ip = argv[1];
+    int port = atoi( argv[2] );
+
+    struct sockaddr_in address;
+    bzero( &address, sizeof( address ) );
+    address.sin_family = AF_INET;
+    inet_pton( AF_INET, ip, &address.sin_addr );
+    address.sin_port = htons( port );
+
+    int sock = socket( PF_INET, SOCK_STREAM, 0 );
+    assert( sock >= 0 );
+
+    int ret = bind( sock, ( struct sockaddr* )&address, sizeof( address ) );
+    assert( ret != -1 );
+
+    ret = listen( sock, 5 );
+    assert( ret != -1 );
+
+    struct sockaddr_in client;
+    socklen_t client_addrlength = sizeof( client );
+    connfd = accept( sock, ( struct sockaddr* )&client, &client_addrlength );
+    if ( connfd < 0 )
+    {
+        printf( "errno is: %d\n", errno );
+    }
+    else
+    {
+        addsig( SIGURG, sig_urg );		//socket连接上收到紧急数据
+        fcntl( connfd, F_SETOWN, getpid() );	//设置socket的宿主进程或进程组
+
+        char buffer[ BUF_SIZE ];
+        while( 1 )
+        {
+            memset( buffer, '\0', BUF_SIZE );
+            ret = recv( connfd, buffer, BUF_SIZE-1, 0 );
+            if( ret <= 0 )
+            {
+                break;
+            }
+            printf( "got %d bytes of normal data '%s'\n", ret, buffer );
+        }
+
+        close( connfd );
+    }
+
+    close( sock );
+    return 0;
+}
+```
+
+# 十一、定时器
+
+两种高效的管理定时器的容器：时间轮和时间堆。		Linux提供了三种定时方法：
+
+- socket选项SO_RCVTIMEO和SO_SNDTIMEEO
+- SIGALARM信号
+- IO复用系统调用的超时参数
+
+## 1.socket选项SO_RCVTIMEO和SO_SNDTIMEEO
+
+这俩选项分别用来设置socket接收数据超时时间和发送数据超时时间。
+
+![1569851962398](pic/1569851962398.png)
+
+由上我们可以根据系统调用的返回值以及errno来判断超时时间是否已到进而决定是否开始处理定时任务。
